@@ -5,16 +5,18 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# edition to launch (matches build.sh output names); default full, remembers last build
-EDITION="${1:-${SENTINEL_EDITION:-}}"
+# which build to launch (matches build.sh output names). Args: [edition] [base];
+# both default to the last build recorded in sentinel-os.conf.
+EDITION="${1:-${SENTINEL_EDITION:-}}"; BASE="${2:-${SENTINEL_BASE:-}}"
 [ -z "$EDITION" ] && [ -f sentinel-os.conf ] && EDITION="$(sed -n 's/^EDITION=//p' sentinel-os.conf | head -1)"
-EDITION="$(echo "${EDITION:-full}" | tr 'A-Z' 'a-z')"
-DISK="sentinel-os-${EDITION}.qcow2"
-SEED="seed-${EDITION}.iso"
+[ -z "$BASE" ]    && [ -f sentinel-os.conf ] && BASE="$(sed -n 's/^BASE_OS=//p' sentinel-os.conf | head -1)"
+EDITION="$(echo "${EDITION:-full}" | tr 'A-Z' 'a-z')"; BASE="$(echo "${BASE:-debian}" | tr 'A-Z' 'a-z')"
+DISK="sentinel-os-${BASE}-${EDITION}.qcow2"
+SEED="seed-${BASE}-${EDITION}.iso"
 RAM="${SENTINEL_RAM:-4096}"
 CPUS="${SENTINEL_CPUS:-2}"
 
-[ -f "$DISK" ] || { echo "no $DISK — run ./build.sh $EDITION first"; exit 1; }
+[ -f "$DISK" ] || { echo "no $DISK — run ./build.sh '$BASE $EDITION' first"; exit 1; }
 
 ACCEL=(); [ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu host) || echo "note: /dev/kvm not writable — running without KVM (slower). Add yourself to the 'kvm' group to speed it up."
 
