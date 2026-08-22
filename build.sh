@@ -30,8 +30,8 @@ case "$EDITION" in
   full|"")    EDITION="full"; DISK_SIZE="30G" ;;
   *) echo "unknown edition '$EDITION' — use: netinstall | slim | full"; exit 2 ;;
 esac
-DISK="sentinel-os-${EDITION}.qcow2"
-SEED="seed-${EDITION}.iso"
+# DISK/SEED names also include the base OS (set once BASE is resolved below) so that
+# building a different base with the same edition never silently reuses a stale disk.
 
 # ── OS registry ───────────────────────────────────────────────────────────────
 # key | pretty name | family | cloud-image directory | filename (or regex) | notes
@@ -76,6 +76,8 @@ fi
 
 FAMILY="${OS_FAMILY[$BASE]}"; DIR="${OS_DIR[$BASE]}"; FILE_RE="${OS_FILE[$BASE]}"
 BASE_IMG="base-${BASE}.qcow2"
+DISK="sentinel-os-${BASE}-${EDITION}.qcow2"      # per base+edition — no stale-disk reuse
+SEED="seed-${BASE}-${EDITION}.iso"
 { echo "BASE_OS=$BASE"; echo "EDITION=$EDITION"; } > "$CONF"   # persist the settings
 echo "== Sentinel OS build  ·  base: ${OS_NAME[$BASE]}  ($FAMILY family)  ·  edition: $EDITION =="
 
@@ -120,6 +122,6 @@ echo
 echo "== done  ·  ${OS_NAME[$BASE]}  ·  $EDITION edition =="
 echo "  disk:  $(pwd)/$DISK"
 echo "  seed:  $(pwd)/$SEED"
-echo "  next:  ./launch.sh $EDITION   (QEMU+KVM)   or   ./export-vbox.sh $EDITION (VirtualBox)"
+echo "  next:  ./launch.sh   (QEMU+KVM)   or   ./export-vbox.sh (VirtualBox)   — both use your last build ($BASE/$EDITION)"
 echo "  login: sentinel / sentinel   ($([ "$EDITION" = netinstall ] && echo 'terminal only — boots to a console' || echo 'first boot installs the Sentinel desktop + tools'))"
 echo "  other editions:  ./build.sh $BASE {netinstall|slim|full}"

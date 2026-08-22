@@ -26,13 +26,13 @@ case "$MODE" in
   sentinel-crack zip|rar|7z <file>              crack a protected archive
   wordlist: $WL   (override with SENTINEL_WORDLIST)"; exit 0 ;;
 
-  ssh|ftp|rdp|smb|mysql|postgres|telnet|vnc|http-get )
+  ssh|ftp|rdp|smb|mysql|postgres|telnet|vnc )
     HOST="${1:?target host}"; command -v sentinel-scope >/dev/null && { sentinel-scope guard "$HOST" || exit 3; }
     command -v hydra >/dev/null || { echo "install hydra"; exit 1; }
     USERS="${2:-}"
     c "» hydra $MODE @ $HOST  (wordlist: $WL)"
     if [ -n "$USERS" ] && [ -f "$USERS" ]; then exec hydra -L "$USERS" -P "$WL" -t 4 -f "$HOST" "$MODE"
-    else c "  no userlist given → trying common users"; printf 'root\nadmin\nuser\n' > /tmp/sc-users.txt; exec hydra -L /tmp/sc-users.txt -P "$WL" -t 4 -f "$HOST" "$MODE"; fi ;;
+    else c "  no userlist given → trying common users"; UL="$(mktemp)"; printf 'root\nadmin\nuser\n' > "$UL"; exec hydra -L "$UL" -P "$WL" -t 4 -f "$HOST" "$MODE"; fi ;;
 
   zip|rar|7z )
     F="${1:?archive file}"; [ -f "$F" ] || { echo "no such file: $F"; exit 1; }
@@ -40,7 +40,7 @@ case "$MODE" in
     TOOL="$(command -v ${MODE}2john ${MODE}2john.pl 2>/dev/null | head -1)"; [ -n "$TOOL" ] || TOOL="$(ls /usr/sbin/${MODE}2john* /usr/bin/${MODE}2john* 2>/dev/null | head -1)"
     [ -n "$TOOL" ] || { echo "no ${MODE}2john found"; exit 1; }
     c "» ${MODE}2john + john ($F)"
-    "$TOOL" "$F" > /tmp/sc.hash 2>/dev/null && john --wordlist="$WL" /tmp/sc.hash && john --show /tmp/sc.hash ;;
+    HH="$(mktemp)"; "$TOOL" "$F" > "$HH" 2>/dev/null && john --wordlist="$WL" "$HH" && john --show "$HH" ;;
 
   * ) # treat as a hash file
     HF="$MODE"; [ -f "$HF" ] || { echo "no such file / unknown mode: $HF"; exit 1; }

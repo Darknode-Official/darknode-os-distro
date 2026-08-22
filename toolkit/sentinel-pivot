@@ -28,8 +28,8 @@ case "${1:-}" in
 
   local)
     SPEC="${2:?usage: sentinel-pivot local <lport>:<rhost>:<rport> <user@jump>}"; JUMP="${3:?user@jump}"
-    IFS=: read -r LP RH RP <<< "$SPEC"
-    [ -n "${LP:-}" ] && [ -n "${RH:-}" ] && [ -n "${RP:-}" ] || { echo "spec must be lport:rhost:rport"; exit 1; }
+    IFS=: read -r LP RH RP EXTRA <<< "$SPEC"
+    [ -n "${LP:-}" ] && [ -n "${RH:-}" ] && [ -n "${RP:-}" ] && [ -z "${EXTRA:-}" ] || { echo "spec must be exactly lport:rhost:rport"; exit 1; }
     c "» local forward 127.0.0.1:$LP → $RH:$RP via $JUMP …"
     ssh -f -N -L "127.0.0.1:$LP:$RH:$RP" -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 "$JUMP" \
       && c "  reach the remote service at 127.0.0.1:$LP" || { echo "ssh failed"; exit 1; } ;;

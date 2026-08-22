@@ -43,7 +43,7 @@ apply(){ # $1 = full path — set on every monitor/workspace backdrop
 
 idx_of(){ # resolve arg (number or name) → array index
   local a="$1"
-  if [[ "$a" =~ ^[0-9]+$ ]]; then echo $(( (a-1) % ${#WP[@]} )); return; fi
+  if [[ "$a" =~ ^[0-9]+$ ]]; then { [ "$a" -ge 1 ] && [ "$a" -le "${#WP[@]}" ]; } && echo $((a-1)) || echo -1; return; fi
   local i; for i in "${!WP[@]}"; do [[ "${WP[$i]}" == *"$a"* ]] && { echo "$i"; return; }; done
   echo -1
 }
@@ -62,7 +62,8 @@ case "${1:-list}" in
   prev) i=$(( ($(cur)-1+${#WP[@]}) % ${#WP[@]} )); apply "${WP[$i]}"; echo "$i">"$STATE"; c "→ $(basename "${WP[$i]}")";;
   random) i=$(( RANDOM % ${#WP[@]} )); apply "${WP[$i]}"; echo "$i">"$STATE"; c "→ $(basename "${WP[$i]}")";;
   cycle)
-    MIN="${2:-15}"; [ -f "$PIDF" ] && kill "$(cat "$PIDF")" 2>/dev/null || true
+    MIN="${2:-15}"; [[ "$MIN" =~ ^[0-9]+$ ]] && [ "$MIN" -ge 1 ] || { echo "cycle minutes must be a positive integer"; exit 1; }
+    [ -f "$PIDF" ] && kill "$(cat "$PIDF")" 2>/dev/null || true
     ( while :; do i=$(( RANDOM % ${#WP[@]} )); apply "${WP[$i]}"; echo "$i">"$STATE"; sleep "$((MIN*60))"; done ) &
     echo $! > "$PIDF"; c "auto-rotating every ${MIN}m (pid $!) — stop with: sentinel-wallpaper stop" ;;
   stop) [ -f "$PIDF" ] && { kill "$(cat "$PIDF")" 2>/dev/null; rm -f "$PIDF"; c "rotation stopped"; } || echo "not rotating" ;;
