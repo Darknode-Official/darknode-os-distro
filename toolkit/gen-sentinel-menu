@@ -36,6 +36,7 @@ done
 # Sentinel's own AI-powered & ops tools (open a terminal ready to use them)
 declare -A NATIVE=(
  [sentinel-agent]="fully-agentic autonomous recon → AI report"
+ [sentinel-autonomy]="persistent mission engine — goals pursued on a schedule"
  [sentinel-harvest]="passive OSINT harvester (subdomains, mail, hosts)"
  [sentinel-watch]="monitor a target's attack surface for changes"
  [sentinel-cheat]="instant AI cheat sheet for any tool/technique"

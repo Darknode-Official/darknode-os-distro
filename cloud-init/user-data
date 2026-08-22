@@ -75,8 +75,18 @@ write_files:
       echo "== Sentinel Autopilot — autonomous AI hacking =="
       echo "  1) Autonomous recon on a target   (sentinel-agent: OSINT -> recon -> AI report)"
       echo "  2) Freeform AI hacking goal        (Nexus autonomous run)"
-      read -rp "choose [1/2]: " MODE
+      echo "  3) Persistent mission              (sentinel-autonomy: pursue a goal on a schedule)"
+      read -rp "choose [1/2/3]: " MODE
       case "${MODE:-1}" in
+        3) command -v sentinel-autonomy >/dev/null || { echo "sentinel-autonomy not installed"; exit 1; }
+           read -rp "Mission name: " MN; read -rp "Goal: " GOAL
+           read -rp "Scope target (blank = freeform): " SC
+           read -rp "Mode [monitor/passive/active/goal] (default passive): " MM
+           read -rp "Every [e.g. 6h/1d] (default 6h): " EV
+           [ -n "$MN" ] && [ -n "$GOAL" ] || { echo "need a name and goal"; exit 1; }
+           sentinel-autonomy add "$MN" --goal "$GOAL" ${SC:+--scope "$SC"} --mode "${MM:-passive}" --every "${EV:-6h}"
+           echo; read -rp "Run it now? [Y/n]: " GO; case "${GO:-y}" in n*|N*) : ;; *) sentinel-autonomy once "$MN";; esac
+           echo; echo "Make it persistent across reboots:  sentinel-autonomy enable"; exit 0 ;;
         2) read -rp "Goal (e.g. 'recon and exploit 10.0.0.5 for a shell'): " GOAL
            [ -n "$GOAL" ] || { echo "no goal given"; exit 1; }
            exec sentinel nexus run "$GOAL" -e ollama ;;
@@ -202,7 +212,7 @@ write_files:
       # Sentinel toolkit — adopted-and-improved distro features + unique AI tools
       for s in sentinel-ai sentinel-scope sentinel-recon sentinel-loot \
                sentinel-harvest sentinel-agent sentinel-greeting \
-               sentinel-cheat sentinel-watch sentinel-catch sentinel-crack sentinel-pivot \
+               sentinel-cheat sentinel-watch sentinel-catch sentinel-crack sentinel-pivot sentinel-autonomy \
                sentinel-anon sentinel-macspoof sentinel-detonate sentinel-stealth \
                sentinel-ask sentinel-triage sentinel-engage sentinel-arsenal \
                sentinel-tweaks sentinel-lockout gen-sentinel-menu sentinel-desktop-setup; do
@@ -298,6 +308,14 @@ write_files:
       Name=Sentinel Autopilot
       Comment=Autonomous AI hacking — give a goal, the local agent runs it
       Exec=xfce4-terminal --title="Sentinel Autopilot" -e sentinel-autopilot
+      Terminal=false
+      D
+      cat > /home/sentinel/Desktop/Autonomy.desktop <<'D'
+      [Desktop Entry]
+      Type=Application
+      Name=Sentinel Autonomy
+      Comment=Persistent mission engine — the local AI pursues your goals on a schedule
+      Exec=xfce4-terminal --title="Sentinel Autonomy" -e "bash -lc 'sentinel-autonomy list; echo; echo \"add:  sentinel-autonomy add <name> --goal \\\"...\\\" [--scope t] [--mode monitor|passive|active|goal] [--every 6h]\"; echo \"run persistently:  sentinel-autonomy enable\"; exec bash'"
       Terminal=false
       D
       cat > /home/sentinel/Desktop/Sentinel-Tweaks.desktop <<'D'
