@@ -5,7 +5,7 @@
 # missions (a goal + optional in-scope target + a cadence) and the local AI pursues them
 # on a schedule — monitoring attack surface for drift, running scoped recon, chasing a
 # freeform goal via Nexus — then writes an AI status report and alerts you on anything
-# that needs attention. Free local model (Ollama), scope-guarded, offline-capable.
+# that needs attention. Uses Claude headless when available, falls back to Ollama. Scope-guarded.
 #
 #   sentinel-autonomy add watch-acme  --goal "watch acme's surface"  --scope acme.com --mode monitor --every 6h
 #   sentinel-autonomy add pentest-lab --goal "find a foothold on the lab" --scope 10.0.0.5 --mode active --every 12h
@@ -44,13 +44,13 @@ _best_model(){
   printf '%s\n' "$ms" | head -1
 }
 ensure_ai(){
+  # Prefer Claude headless (strongest engine); fall back to Ollama if unavailable.
+  command -v claude >/dev/null 2>&1 && return 0
   command -v ollama >/dev/null 2>&1 || return 0
   pgrep -x ollama >/dev/null || (nohup ollama serve >/dev/null 2>&1 &)
   for _ in $(seq 1 20); do ollama list >/dev/null 2>&1 && break; sleep 1; done
-  # only auto-pull if NOTHING capable is installed (never surprise-download the 63GB 120b)
   ollama list 2>/dev/null | grep -qiE 'gpt-oss|llama3|qwen|mistral|deepseek|hermes' \
     || { echo "[*] pulling a local model (one-time)…"; ollama pull gpt-oss:20b >/dev/null 2>&1 || ollama pull llama3.2:3b >/dev/null 2>&1 || true; }
-  # point every Sentinel tool (sentinel-ai, Nexus) at the best model available
   export SENTINEL_MODEL="${SENTINEL_MODEL:-$(_best_model)}"
 }
 
@@ -100,11 +100,11 @@ _run_mission(){
       else echo "sentinel-agent/sentinel-recon unavailable" > "$out"; fi ;;
     active)    # authorized active testing toward the goal
       if command -v sentinel-agent >/dev/null; then SENTINEL_AGENT_AGGRESSIVE=1 sentinel-agent "$SCOPE" > "$out" 2>&1 || true
-      elif command -v sentinel >/dev/null; then sentinel nexus run "$GOAL (target $SCOPE)" -e ollama > "$out" 2>&1 || true
+      elif command -v sentinel >/dev/null; then sentinel nexus run "$GOAL (target $SCOPE)" > "$out" 2>&1 || true
       else echo "sentinel-agent/nexus unavailable" > "$out"; fi
       grep -qiE 'CVE-|vuln|open port|credential|finding' "$out" && { alert=1; headline="findings on $SCOPE"; } ;;
     goal)      # freeform objective — hand it to Nexus autonomously (no fixed target)
-      if command -v sentinel >/dev/null; then sentinel nexus run "$GOAL" -e ollama > "$out" 2>&1 || true; else echo "nexus unavailable" > "$out"; fi ;;
+      if command -v sentinel >/dev/null; then sentinel nexus run "$GOAL" > "$out" 2>&1 || true; else echo "nexus unavailable" > "$out"; fi ;;
   esac
   # AI writes a short operator-facing status report from the run output. It must end with
   # a machine-readable ACT_NOW: yes|no line so alerting is reliable (not regex-guessing prose).
