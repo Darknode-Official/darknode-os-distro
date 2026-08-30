@@ -153,7 +153,22 @@ write_files:
         radare2 binwalk foremost sleuthkit \
         netcat-traditional python3-impacket \
         tor nftables firejail firejail-profiles apparmor apparmor-utils macchanger \
-        proxychains4 torsocks gnupg whiptail kbd libglib2.0-bin"
+        proxychains4 torsocks gnupg whiptail kbd libglib2.0-bin \
+        tshark ngrep hping3 netdiscover nbtscan smbclient enum4linux \
+        onesixtyone snmp sslscan arpwatch socat rlwrap \
+        medusa ncrack cewl crunch wordlists \
+        kismet pixiewps reaver wifite \
+        yara clamav gdb strace ltrace hexedit libimage-exiftool-perl \
+        tmux screen vim neovim zsh fzf ripgrep bat htop \
+        ruby ruby-dev libssl-dev libffi-dev \
+        awscli python3-boto3 \
+        autopsy testdisk scalpel dc3dd ewf-tools \
+        theharvester recon-ng spiderfoot \
+        responder crackmapexec evil-winrm \
+        ffuf feroxbuster subfinder amass nuclei httpx \
+        zaproxy wpscan arjun \
+        chisel ligolo-ng pwncat \
+        seclists payloadsallthethings fuzzdb"
       # DESKTOP — XFCE + GUI tools, added for slim & full (not netinstall).
       PKGS_DESKTOP="xfce4 xfce4-terminal xfce4-goodies xfce4-whiskermenu-plugin lightdm dbus-x11 \
         wireshark ettercap-graphical keepassxc desktop-file-utils \

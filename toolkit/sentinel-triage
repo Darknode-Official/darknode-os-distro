@@ -1,13 +1,1 @@
-#!/usr/bin/env bash
-# AI target triage: run a quick recon chain against a target and get an AI summary + next steps.
-set -uo pipefail
-T="${1:-}"; [ -n "$T" ] || { echo "usage: sentinel-triage <ip|domain>"; exit 1; }
-command -v sentinel-scope >/dev/null && { sentinel-scope guard "$T" || exit 3; }
-OUT="$(mktemp -d)"
-echo "[*] recon $T (nmap — authorized targets only)…"
-nmap -Pn -T4 --top-ports 200 -sV "$T" > "$OUT/nmap.txt" 2>&1 || true
-command -v whatweb >/dev/null && whatweb "$T" > "$OUT/whatweb.txt" 2>&1 || true
-echo; echo "===== AI triage: $T ====="
-cat "$OUT"/*.txt 2>/dev/null | head -c 6000 | sentinel-ai -s "You are a penetration tester giving a fast triage." \
-  "From this recon of $T, give: (1) open services + versions, (2) the attack surface, (3) the top 3 next steps with exact commands."
-echo; echo "(raw scans: $OUT)"
+util/sentinel-triage

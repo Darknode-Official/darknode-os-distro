@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# sentinel-toolkit — verify and install the complete hacking toolkit
+#   sentinel-toolkit check      — verify all tools are installed
+#   sentinel-toolkit install    — install missing tools
+#   sentinel-toolkit list       — list all tools by category
+#   sentinel-toolkit search <q> — search for a tool
+set -uo pipefail
+
+c(){ printf '\e[1;36m%s\e[0m' "$*"; }
+g(){ printf '\e[32m%s\e[0m' "$*"; }
+r(){ printf '\e[31m%s\e[0m' "$*"; }
+y(){ printf '\e[33m%s\e[0m' "$*"; }
+dim(){ printf '\e[2m%s\e[0m' "$*"; }
+
+# Tool registry: name|category|install_method|package_or_command
+# install_method: apt, pip, go, gem, git, snap, manual
+TOOLS=(
+# --- Reconnaissance ---
+"nmap|Recon|apt|nmap"
+"masscan|Recon|apt|masscan"
+"amass|Recon|apt|amass"
+"subfinder|Recon|apt|subfinder"
+"ffuf|Recon|apt|ffuf"
+"gobuster|Recon|apt|gobuster"
+"feroxbuster|Recon|apt|feroxbuster"
+"dnsrecon|Recon|apt|dnsrecon"
+"dnsenum|Recon|apt|dnsenum"
+"fierce|Recon|pip|fierce"
+"theharvester|Recon|apt|theharvester"
+"recon-ng|Recon|apt|recon-ng"
+"spiderfoot|Recon|apt|spiderfoot"
+"sherlock|Recon|pip|sherlock"
+"whatweb|Recon|apt|whatweb"
+"wafw00f|Recon|apt|wafw00f"
+"httpx|Recon|apt|httpx"
+"nuclei|Recon|apt|nuclei"
+"whois|Recon|apt|whois"
+"dig|Recon|apt|dnsutils"
+"traceroute|Recon|apt|traceroute"
+"netdiscover|Recon|apt|netdiscover"
+"nbtscan|Recon|apt|nbtscan"
+"enum4linux|Recon|apt|enum4linux"
+"sslscan|Recon|apt|sslscan"
+"arjun|Recon|pip|arjun"
+# --- Web Application ---
+"nikto|Web|apt|nikto"
+"sqlmap|Web|apt|sqlmap"
+"wpscan|Web|apt|wpscan"
+"zaproxy|Web|apt|zaproxy"
+"dirb|Web|apt|dirb"
+"wfuzz|Web|apt|wfuzz"
+"commix|Web|pip|commix"
+"xsstrike|Web|pip|xsstrike"
+"dalfox|Web|go|github.com/hahwul/dalfox/v2@latest"
+# --- Network ---
+"wireshark|Network|apt|wireshark"
+"tshark|Network|apt|tshark"
+"tcpdump|Network|apt|tcpdump"
+"ngrep|Network|apt|ngrep"
+"hping3|Network|apt|hping3"
+"ettercap|Network|apt|ettercap-text-only"
+"bettercap|Network|apt|bettercap"
+"responder|Network|apt|responder"
+"arpwatch|Network|apt|arpwatch"
+"netcat|Network|apt|netcat-traditional"
+"socat|Network|apt|socat"
+"proxychains|Network|apt|proxychains4"
+"smbclient|Network|apt|smbclient"
+"onesixtyone|Network|apt|onesixtyone"
+"snmpwalk|Network|apt|snmp"
+# --- Exploitation ---
+"msfconsole|Exploit|apt|metasploit-framework"
+"searchsploit|Exploit|apt|exploitdb"
+"msfvenom|Exploit|apt|metasploit-framework"
+# --- Password ---
+"hydra|Password|apt|hydra"
+"john|Password|apt|john"
+"hashcat|Password|apt|hashcat"
+"medusa|Password|apt|medusa"
+"ncrack|Password|apt|ncrack"
+"cewl|Password|apt|cewl"
+"crunch|Password|apt|crunch"
+# --- Wireless ---
+"aircrack-ng|Wireless|apt|aircrack-ng"
+"kismet|Wireless|apt|kismet"
+"reaver|Wireless|apt|reaver"
+"wifite|Wireless|apt|wifite"
+"pixiewps|Wireless|apt|pixiewps"
+# --- Post-Exploitation ---
+"crackmapexec|PostExploit|apt|crackmapexec"
+"evil-winrm|PostExploit|apt|evil-winrm"
+"chisel|PostExploit|apt|chisel"
+"impacket|PostExploit|apt|python3-impacket"
+"pwncat|PostExploit|pip|pwncat-cs"
+# --- Forensics & RE ---
+"radare2|Forensics|apt|radare2"
+"binwalk|Forensics|apt|binwalk"
+"foremost|Forensics|apt|foremost"
+"sleuthkit|Forensics|apt|sleuthkit"
+"autopsy|Forensics|apt|autopsy"
+"volatility3|Forensics|pip|volatility3"
+"yara|Forensics|apt|yara"
+"clamav|Forensics|apt|clamav"
+"gdb|Forensics|apt|gdb"
+"strace|Forensics|apt|strace"
+"ltrace|Forensics|apt|ltrace"
+"hexedit|Forensics|apt|hexedit"
+"exiftool|Forensics|apt|libimage-exiftool-perl"
+"scalpel|Forensics|apt|scalpel"
+"testdisk|Forensics|apt|testdisk"
+# --- Cloud & Container ---
+"aws|Cloud|apt|awscli"
+"docker|Cloud|apt|docker.io"
+"kubectl|Cloud|apt|kubectl"
+"trivy|Cloud|apt|trivy"
+"terraform|Cloud|apt|terraform"
+# --- Anonymity ---
+"tor|Anon|apt|tor"
+"torsocks|Anon|apt|torsocks"
+"macchanger|Anon|apt|macchanger"
+"firejail|Anon|apt|firejail"
+# --- AI & Automation ---
+"sentinel|AI|manual|sentinel-cli"
+"ollama|AI|manual|ollama"
+"claude|AI|manual|claude-code"
+# --- Utilities ---
+"tmux|Util|apt|tmux"
+"screen|Util|apt|screen"
+"vim|Util|apt|vim"
+"neovim|Util|apt|neovim"
+"zsh|Util|apt|zsh"
+"fzf|Util|apt|fzf"
+"ripgrep|Util|apt|ripgrep"
+"bat|Util|apt|bat"
+"htop|Util|apt|htop"
+"jq|Util|apt|jq"
+"rlwrap|Util|apt|rlwrap"
+"curl|Util|apt|curl"
+"wget|Util|apt|wget"
+"git|Util|apt|git"
+)
+
+_check_tool(){
+  local name="$1"
+  case "$name" in
+    dig) command -v dig >/dev/null 2>&1 ;;
+    searchsploit) command -v searchsploit >/dev/null 2>&1 || [ -f /opt/exploitdb/searchsploit ] ;;
+    impacket) python3 -c "import impacket" 2>/dev/null ;;
+    volatility3) python3 -c "import volatility3" 2>/dev/null || command -v vol >/dev/null 2>&1 ;;
+    exiftool) command -v exiftool >/dev/null 2>&1 ;;
+    aws) command -v aws >/dev/null 2>&1 ;;
+    *) command -v "$name" >/dev/null 2>&1 ;;
+  esac
+}
+
+cmd_check(){
+  local total=0 found=0 missing=0
+  local last_cat=""
+  for entry in "${TOOLS[@]}"; do
+    IFS='|' read -r name cat method pkg <<< "$entry"
+    if [ "$cat" != "$last_cat" ]; then
+      [ -n "$last_cat" ] && echo ""
+      printf "  \e[1;36m%-20s\e[0m\n" "[$cat]"
+      last_cat="$cat"
+    fi
+    total=$((total+1))
+    if _check_tool "$name"; then
+      printf "    $(g '[ok]') %s\n" "$name"
+      found=$((found+1))
+    else
+      printf "    $(r '[--]') %s  $(dim '(%s %s)')\n" "$name" "$method" "$pkg"
+      missing=$((missing+1))
+    fi
+  done
+  echo ""
+  echo "  $(g "$found") installed, $(r "$missing") missing, $total total"
+  [ "$missing" -gt 0 ] && echo "  Run $(c 'sentinel-toolkit install') to install missing tools."
+}
+
+cmd_install(){
+  local missing_apt=() missing_pip=() missing_go=()
+  for entry in "${TOOLS[@]}"; do
+    IFS='|' read -r name cat method pkg <<< "$entry"
+    _check_tool "$name" && continue
+    case "$method" in
+      apt) missing_apt+=("$pkg") ;;
+      pip) missing_pip+=("$name") ;;
+      go)  missing_go+=("$pkg") ;;
+    esac
+  done
+
+  if [ ${#missing_apt[@]} -eq 0 ] && [ ${#missing_pip[@]} -eq 0 ] && [ ${#missing_go[@]} -eq 0 ]; then
+    g "All tools are installed!"
+    echo ""
+    return 0
+  fi
+
+  echo ""
+  c "Installing missing tools..."
+  echo ""
+
+  if [ ${#missing_apt[@]} -gt 0 ]; then
+    echo "  APT packages: ${missing_apt[*]}"
+    sudo apt-get update -y >/dev/null 2>&1
+    for pkg in "${missing_apt[@]}"; do
+      printf "    Installing %s... " "$pkg"
+      if sudo apt-get install -y "$pkg" >/dev/null 2>&1; then
+        g "ok"; echo ""
+      else
+        r "failed"; echo ""
+      fi
+    done
+  fi
+
+  if [ ${#missing_pip[@]} -gt 0 ]; then
+    echo "  PIP packages: ${missing_pip[*]}"
+    for pkg in "${missing_pip[@]}"; do
+      printf "    Installing %s... " "$pkg"
+      if pipx install "$pkg" >/dev/null 2>&1 || pip3 install --user "$pkg" >/dev/null 2>&1; then
+        g "ok"; echo ""
+      else
+        r "failed"; echo ""
+      fi
+    done
+  fi
+
+  if [ ${#missing_go[@]} -gt 0 ]; then
+    echo "  Go packages: ${missing_go[*]}"
+    for pkg in "${missing_go[@]}"; do
+      printf "    Installing %s... " "$(basename "$pkg")"
+      if go install "$pkg" >/dev/null 2>&1; then
+        g "ok"; echo ""
+      else
+        r "failed"; echo ""
+      fi
+    done
+  fi
+
+  echo ""
+  g "Done."
+  echo "  Run $(c 'sentinel-toolkit check') to verify."
+}
+
+cmd_list(){
+  echo ""
+  c "Sentinel OS Tool Registry"
+  echo ""
+  local last_cat=""
+  for entry in "${TOOLS[@]}"; do
+    IFS='|' read -r name cat method pkg <<< "$entry"
+    if [ "$cat" != "$last_cat" ]; then
+      [ -n "$last_cat" ] && echo ""
+      printf "  \e[1;36m%s\e[0m\n" "=== $cat ==="
+      last_cat="$cat"
+    fi
+    local status="--"
+    _check_tool "$name" && status="ok"
+    printf "    %-20s %s\n" "$name" "($method: $pkg)"
+  done
+  echo ""
+  echo "  Total: ${#TOOLS[@]} tools"
+}
+
+cmd_search(){
+  local q="${1:?usage: sentinel-toolkit search <query>}"
+  q=$(echo "$q" | tr '[:upper:]' '[:lower:]')
+  echo ""
+  c "Searching for: $q"
+  echo ""
+  local found=0
+  for entry in "${TOOLS[@]}"; do
+    IFS='|' read -r name cat method pkg <<< "$entry"
+    if echo "$name $cat $pkg" | tr '[:upper:]' '[:lower:]' | grep -q "$q"; then
+      local status; _check_tool "$name" && status="$(g '[ok]')" || status="$(r '[--]')"
+      printf "  $status %-20s %-15s %s\n" "$name" "$cat" "($method: $pkg)"
+      found=$((found+1))
+    fi
+  done
+  [ "$found" -eq 0 ] && y "  No tools matching '$q'"
+  echo ""
+}
+
+case "${1:-help}" in
+  check)   cmd_check ;;
+  install) cmd_install ;;
+  list)    cmd_list ;;
+  search)  shift; cmd_search "$@" ;;
+  *)
+    echo ""
+    echo "  sentinel-toolkit — manage the hacking toolkit"
+    echo ""
+    echo "    check      Verify all tools are installed"
+    echo "    install    Install missing tools"
+    echo "    list       List all tools by category"
+    echo "    search <q> Search for a tool"
+    echo ""
+    ;;
+esac
