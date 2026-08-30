@@ -1296,47 +1296,109 @@ for s in d.get('data',[])[:10]:
 
 # ---- search malware databases ----
 cmd_search(){
-  local query="${1:?usage: sentinel-sandbox search <tag|family|type>}"
+  _check_terms || return 1
+  local query="${1:-}"
+
+  if [ -z "$query" ]; then
+    # Interactive category browser
+    echo ""
+    c "Sentinel Sandbox — Malware Database Browser"
+    dim "Search and download real malware samples from MalwareBazaar (abuse.ch)"
+    echo ""
+    c "Popular malware families:"
+    echo "   1) Emotet          Banking trojan, email spreader"
+    echo "   2) WannaCry        Ransomware (EternalBlue worm)"
+    echo "   3) Cobalt Strike   Red team C2 beacon"
+    echo "   4) TrickBot        Banking trojan, loader"
+    echo "   5) QakBot          Email-based banking trojan"
+    echo "   6) RedLine         Info stealer (browsers, wallets)"
+    echo "   7) AgentTesla      Keylogger and credential stealer"
+    echo "   8) Formbook        Form-grabber and keylogger"
+    echo "   9) AsyncRAT        Remote access trojan"
+    echo "  10) Remcos          Commercial RAT abused by attackers"
+    echo "  11) LockBit         Ransomware-as-a-Service"
+    echo "  12) BlackCat/ALPHV  Rust-based ransomware"
+    echo "  13) Mirai           IoT botnet"
+    echo "  14) njRAT           .NET remote access trojan"
+    echo "  15) IcedID          Banking trojan and loader"
+    echo "  16) Raccoon         Info stealer"
+    echo "  17) Vidar           Info stealer"
+    echo "  18) SmokeLoader     Modular loader/downloader"
+    echo "  19) Dridex          Banking trojan"
+    echo "  20) Ryuk            Targeted ransomware"
+    echo ""
+    printf "  Pick a number (1-20) or type a custom search: "
+    read -r pick
+    case "$pick" in
+      1) query="Emotet" ;; 2) query="WannaCry" ;; 3) query="CobaltStrike" ;;
+      4) query="TrickBot" ;; 5) query="QakBot" ;; 6) query="RedLine" ;;
+      7) query="AgentTesla" ;; 8) query="Formbook" ;; 9) query="AsyncRAT" ;;
+      10) query="Remcos" ;; 11) query="LockBit" ;; 12) query="BlackCat" ;;
+      13) query="Mirai" ;; 14) query="njRAT" ;; 15) query="IcedID" ;;
+      16) query="Raccoon" ;; 17) query="Vidar" ;; 18) query="SmokeLoader" ;;
+      19) query="Dridex" ;; 20) query="Ryuk" ;;
+      *) query="$pick" ;;
+    esac
+  fi
+
   c "Searching MalwareBazaar for: $query..."
   echo ""
 
-  # Try tag search
-  local results=$(curl -s -X POST "https://mb-api.abuse.ch/api/v1/" \
-    -d "query=get_taginfo" -d "tag=$query" -d "limit=15" 2>/dev/null)
-  local count=$(echo "$results" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('data',[])))" 2>/dev/null || echo "0")
-
-  if [ "$count" -gt 0 ]; then
-    printf "  %-18s %-14s %-22s %s\n" "SHA256" "TYPE" "SIGNATURE" "FIRST SEEN"
-    printf "  %-18s %-14s %-22s %s\n" "---" "---" "---" "---"
-    echo "$results" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-for s in d.get('data',[])[:15]:
-    print(f\"  {s.get('sha256_hash','?')[:16]}..  {s.get('file_type','?'):14s}{s.get('signature','unknown'):22s}{s.get('first_seen','?')[:10]}\")
-" 2>/dev/null
-    echo ""
-    echo "  Download: sentinel-sandbox fetch <full_sha256>"
-    echo "  Total results: $count"
-  else
-    # Try signature search
+  # Try tag search first, then signature search
+  local results="" count="0"
+  for method in "get_taginfo|tag" "get_siginfo|signature"; do
+    IFS='|' read -r api_query param <<< "$method"
     results=$(curl -s -X POST "https://mb-api.abuse.ch/api/v1/" \
-      -d "query=get_siginfo" -d "signature=$query" -d "limit=15" 2>/dev/null)
+      -d "query=$api_query" -d "$param=$query" -d "limit=20" 2>/dev/null)
     count=$(echo "$results" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('data',[])))" 2>/dev/null || echo "0")
+    [ "$count" -gt 0 ] && break
+  done
 
-    if [ "$count" -gt 0 ]; then
-      echo "  Found $count samples matching signature '$query':"
-      echo "$results" | python3 -c "
+  if [ "$count" -eq 0 ]; then
+    y "No results for '$query'."
+    echo "  Try: emotet, wannacry, cobalt-strike, trickbot, redline, lockbit"
+    return 0
+  fi
+
+  # Display numbered results
+  echo "  Found $count samples:"
+  echo ""
+  printf "  %-4s %-18s %-14s %-22s %s\n" "#" "SHA256" "TYPE" "FAMILY" "DATE"
+  printf "  %-4s %-18s %-14s %-22s %s\n" "---" "---" "---" "---" "---"
+
+  # Store hashes for selection
+  local hashes_file=$(mktemp)
+  echo "$results" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
-for s in d.get('data',[])[:10]:
-    print(f\"  {s.get('sha256_hash','?')[:16]}..  {s.get('file_type','?'):12s}  {s.get('first_seen','?')[:10]}\")
-" 2>/dev/null
-      echo ""
-      echo "  Download: sentinel-sandbox fetch <full_sha256>"
-    else
-      y "No results. Try tags like: emotet, wannacry, cobalt-strike, trickbot, qakbot, redline"
-    fi
+for i,s in enumerate(d.get('data',[])[:20], 1):
+    h = s.get('sha256_hash','?')
+    print(f\"  {i:<4d}{h[:16]}..  {s.get('file_type','?'):14s}{s.get('signature','unknown'):22s}{s.get('first_seen','?')[:10]}\")
+    print(h, file=sys.stderr)
+" 2>"$hashes_file"
+
+  echo ""
+  r "WARNING: These are REAL malware samples. Only download into the sandbox."
+  echo ""
+  printf "  Enter number to download (or 'q' to quit): "
+  read -r selection
+
+  if [ "$selection" = "q" ] || [ -z "$selection" ]; then
+    rm -f "$hashes_file"
+    return 0
   fi
+
+  # Get the hash for the selected number
+  local hash=$(sed -n "${selection}p" "$hashes_file")
+  rm -f "$hashes_file"
+
+  if [ -z "$hash" ]; then
+    r "Invalid selection."
+    return 1
+  fi
+
+  echo ""
+  cmd_fetch "$hash"
 }
 
 # ---- usage ----
