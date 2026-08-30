@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# sentinel-webscan — web application scanner orchestrator
+set -uo pipefail
+SCAN_DIR="$HOME/.sentinel/webscans"
+mkdir -p "$SCAN_DIR"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+ts(){ date -u +%Y%m%d-%H%M%S; }
+_has(){ command -v "$1" >/dev/null 2>&1; }
+
+_run_tool(){
+  local name="$1" cmd="$2" outfile="$3"
+  if _has "$(echo "$cmd" | awk '{print $1}')"; then
+    c "  [$name] running..."
+    eval "$cmd" > "$outfile" 2>&1 &
+    echo $!
+  else
+    y "  [$name] not installed — skipping"
+    echo ""
+  fi
+}
+
+cmd_tech(){
+  local target="${1:?usage: sentinel-webscan tech <url>}"
+  local out="$SCAN_DIR/tech-$(ts)"
+  mkdir -p "$out"
+  c "Technology fingerprinting: $target"
+  _has whatweb && { whatweb "$target" 2>&1 | tee "$out/whatweb.txt"; }
+  _has wafw00f && { wafw00f "$target" 2>&1 | tee "$out/wafw00f.txt"; }
+  _has curl && {
+    echo ""; c "Response headers:"
+    curl -sI "$target" 2>/dev/null | tee "$out/headers.txt"
+  }
+  g "Results: $out/"
+}
+
+cmd_dirs(){
+  local target="${1:?usage: sentinel-webscan dirs <url>}"
+  local out="$SCAN_DIR/dirs-$(ts)"
+  mkdir -p "$out"
+  c "Directory enumeration: $target"
+  local pids=()
+  local wordlist="/usr/share/seclists/Discovery/Web-Content/common.txt"
+  [ -f "$wordlist" ] || wordlist="/usr/share/wordlists/dirb/common.txt"
+  [ -f "$wordlist" ] || wordlist="/usr/share/dirb/wordlists/common.txt"
+
+  if _has gobuster; then
+    c "  [gobuster] running..."
+    gobuster dir -u "$target" -w "$wordlist" -q -o "$out/gobuster.txt" 2>/dev/null &
+    pids+=($!)
+  fi
+  if _has ffuf; then
+    c "  [ffuf] running..."
+    ffuf -u "${target}/FUZZ" -w "$wordlist" -mc 200,301,302,403 -o "$out/ffuf.json" -of json -s 2>/dev/null &
+    pids+=($!)
+  fi
+  if _has dirb; then
+    c "  [dirb] running..."
+    dirb "$target" "$wordlist" -S -o "$out/dirb.txt" 2>/dev/null &
+    pids+=($!)
+  fi
+  [ ${#pids[@]} -gt 0 ] && { y "  Waiting for ${#pids[@]} scanners..."; wait "${pids[@]}" 2>/dev/null; }
+  g "Results: $out/"
+  for f in "$out"/*; do
+    [ -f "$f" ] && echo "  $(basename "$f"): $(wc -l < "$f") lines"
+  done
+}
+
+cmd_vulns(){
+  local target="${1:?usage: sentinel-webscan vulns <url>}"
+  local out="$SCAN_DIR/vulns-$(ts)"
+  mkdir -p "$out"
+  c "Vulnerability scanning: $target"
+  local pids=()
+  if _has nikto; then
+    c "  [nikto] running..."
+    nikto -h "$target" -o "$out/nikto.txt" 2>/dev/null &
+    pids+=($!)
+  fi
+  if _has nuclei; then
+    c "  [nuclei] running..."
+    nuclei -u "$target" -o "$out/nuclei.txt" -silent 2>/dev/null &
+    pids+=($!)
+  fi
+  if _has sslscan; then
+    c "  [sslscan] running..."
+    sslscan "$target" > "$out/sslscan.txt" 2>/dev/null &
+    pids+=($!)
+  fi
+  [ ${#pids[@]} -gt 0 ] && { y "  Waiting for ${#pids[@]} scanners..."; wait "${pids[@]}" 2>/dev/null; }
+  g "Results: $out/"
+  for f in "$out"/*; do
+    [ -f "$f" ] && echo "  $(basename "$f"): $(wc -l < "$f") lines"
+  done
+}
+
+cmd_full(){
+  local target="${1:?usage: sentinel-webscan full <url>}"
+  local out="$SCAN_DIR/full-$(ts)"
+  mkdir -p "$out"
+  c "Full web scan: $target"
+  echo ""
+  c "Phase 1: Technology detection"
+  _has whatweb && whatweb "$target" > "$out/whatweb.txt" 2>&1 && echo "  whatweb done"
+  _has wafw00f && wafw00f "$target" > "$out/wafw00f.txt" 2>&1 && echo "  wafw00f done"
+  curl -sI "$target" > "$out/headers.txt" 2>/dev/null && echo "  headers saved"
+
+  echo ""
+  c "Phase 2: Directory enumeration + vulnerability scanning (parallel)"
+  local pids=()
+  local wordlist="/usr/share/seclists/Discovery/Web-Content/common.txt"
+  [ -f "$wordlist" ] || wordlist="/usr/share/wordlists/dirb/common.txt"
+  [ -f "$wordlist" ] || { y "  No wordlist found — skipping dir scan"; wordlist=""; }
+
+  [ -n "$wordlist" ] && _has gobuster && { gobuster dir -u "$target" -w "$wordlist" -q -o "$out/gobuster.txt" 2>/dev/null & pids+=($!); }
+  [ -n "$wordlist" ] && _has ffuf && { ffuf -u "${target}/FUZZ" -w "$wordlist" -mc 200,301,302,403 -o "$out/ffuf.json" -of json -s 2>/dev/null & pids+=($!); }
+  _has nikto && { nikto -h "$target" -o "$out/nikto.txt" 2>/dev/null & pids+=($!); }
+  _has nuclei && { nuclei -u "$target" -o "$out/nuclei.txt" -silent 2>/dev/null & pids+=($!); }
+  _has sslscan && { sslscan "$target" > "$out/sslscan.txt" 2>/dev/null & pids+=($!); }
+
+  [ ${#pids[@]} -gt 0 ] && { y "  ${#pids[@]} tools running in parallel. Waiting..."; wait "${pids[@]}" 2>/dev/null; }
+
+  echo ""
+  g "=== Scan Complete ==="
+  echo "  Results directory: $out/"
+  for f in "$out"/*; do
+    [ -f "$f" ] && echo "  $(basename "$f"): $(wc -l < "$f") lines"
+  done
+}
+
+cmd_results(){
+  c "Web Scan Results"
+  echo ""
+  if [ -d "$SCAN_DIR" ]; then
+    ls -dt "$SCAN_DIR"/*/ 2>/dev/null | head -20 | while read -r d; do
+      local name=$(basename "$d")
+      local files=$(ls "$d" 2>/dev/null | wc -l)
+      echo "  $name/  ($files files)"
+    done
+  else
+    dim "No scans yet."
+  fi
+}
+
+usage(){
+  cat << 'EOF'
+
+  sentinel-webscan — web application scanner orchestrator
+
+  Commands:
+    full <url>     Run all scanners (tech + dirs + vulns) in parallel
+    tech <url>     Technology fingerprinting (whatweb, wafw00f, headers)
+    dirs <url>     Directory enumeration (gobuster, ffuf, dirb)
+    vulns <url>    Vulnerability scanning (nikto, nuclei, sslscan)
+    results        List saved scan results
+
+  Tools used: whatweb, wafw00f, gobuster, ffuf, dirb, nikto, nuclei, sslscan
+  Missing tools are skipped automatically.
+  Results saved to: ~/.sentinel/webscans/
+
+EOF
+}
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  full)    cmd_full "$@" ;;
+  tech)    cmd_tech "$@" ;;
+  dirs)    cmd_dirs "$@" ;;
+  vulns)   cmd_vulns "$@" ;;
+  results) cmd_results ;;
+  help|--help|-h) usage ;;
+  *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac
