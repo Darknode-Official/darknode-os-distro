@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Quick "look boring" toggle for XFCE (undercover-lite): switch to a plain light
+set -uo pipefail
 # theme + neutral wallpaper, or restore the Sentinel dark look. Also a panic mode.
 S="$HOME/.config/sentinel/stealth.state"; mkdir -p "$(dirname "$S")"
 set_theme(){ xfconf-query -c xsettings -p /Net/ThemeName -s "$1" 2>/dev/null; xfconf-query -c xfwm4 -p /general/theme -s "$1" 2>/dev/null; }
