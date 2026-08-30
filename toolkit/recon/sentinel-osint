@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# sentinel-osint — OSINT intelligence dashboard
+set -uo pipefail
+OUT_DIR="$HOME/.sentinel/osint"
+mkdir -p "$OUT_DIR"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+_has(){ command -v "$1" >/dev/null 2>&1; }
+
+cmd_target(){
+  local domain="${1:?usage: sentinel-osint target <domain>}"
+  local out="$OUT_DIR/$domain-$(date +%Y%m%d)"
+  mkdir -p "$out"
+  c "OSINT Report: $domain"
+  echo ""
+
+  c "=== WHOIS ==="
+  whois "$domain" 2>/dev/null | tee "$out/whois.txt" | grep -iE "registrant|admin|name server|creation|expiry|updated" | head -15
+  echo ""
+
+  c "=== DNS Records ==="
+  for t in A AAAA MX NS TXT CNAME SOA; do
+    result=$(dig +short "$domain" "$t" 2>/dev/null)
+    [ -n "$result" ] && echo "  $t: $result"
+  done | tee "$out/dns.txt"
+  echo ""
+
+  c "=== Certificate Transparency (crt.sh) ==="
+  curl -s "https://crt.sh/?q=%25.$domain&output=json" 2>/dev/null | \
+    python3 -c "import sys,json;[print('  '+v) for v in sorted(set(e.get('name_value','') for e in json.load(sys.stdin)))]" 2>/dev/null | \
+    head -30 | tee "$out/crt_sh.txt"
+  echo ""
+
+  c "=== Wayback Machine URLs ==="
+  curl -s "http://web.archive.org/cdx/search/cdx?url=$domain/*&output=text&fl=original&collapse=urlkey&limit=20" 2>/dev/null | \
+    tee "$out/wayback.txt" | head -15
+  echo ""
+
+  c "=== IP Information ==="
+  local ip=$(dig +short "$domain" A 2>/dev/null | head -1)
+  if [ -n "$ip" ]; then
+    echo "  IP: $ip"
+    whois "$ip" 2>/dev/null | grep -iE "org-name|orgname|netname|country|cidr" | head -5 | tee -a "$out/ip_info.txt"
+  fi
+  echo ""
+
+  if _has theHarvester; then
+    c "=== theHarvester ==="
+    theHarvester -d "$domain" -b google,bing -l 100 2>/dev/null | tee "$out/harvester.txt" | tail -20
+    echo ""
+  fi
+
+  g "Report saved: $out/"
+  for f in "$out"/*; do [ -f "$f" ] && echo "  $(basename "$f"): $(wc -l < "$f") lines"; done
+}
+
+cmd_email(){
+  local email="${1:?usage: sentinel-osint email <address>}"
+  local domain=$(echo "$email" | cut -d@ -f2)
+  c "Email OSINT: $email"
+  echo ""
+  c "=== Domain Info ==="
+  dig +short "$domain" MX 2>/dev/null | while read -r line; do echo "  MX: $line"; done
+  dig +short "$domain" TXT 2>/dev/null | grep -i spf | while read -r line; do echo "  SPF: $line"; done
+  echo ""
+  c "=== Breach Check ==="
+  dim "  Check manually: haveibeenpwned.com"
+  dim "  Or use: h8mail -t $email"
+  if _has h8mail; then
+    h8mail -t "$email" 2>/dev/null | tail -10
+  fi
+}
+
+cmd_username(){
+  local user="${1:?usage: sentinel-osint username <username>}"
+  c "Username OSINT: $user"
+  echo ""
+  c "=== Social Media Check ==="
+  local sites=("github.com/$user" "twitter.com/$user" "instagram.com/$user" "reddit.com/user/$user" "linkedin.com/in/$user" "medium.com/@$user" "keybase.io/$user")
+  for site in "${sites[@]}"; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' "https://$site" 2>/dev/null)
+    if [ "$code" = "200" ]; then
+      g "  [FOUND] https://$site"
+    else
+      dim "  [  -  ] https://$site ($code)"
+    fi
+  done
+  echo ""
+  if _has sherlock; then
+    c "=== Sherlock ==="
+    sherlock "$user" --print-found 2>/dev/null | head -20
+  fi
+}
+
+cmd_person(){
+  local name="${1:?usage: sentinel-osint person \"Full Name\"}"
+  c "Person OSINT: $name"
+  echo ""
+  c "=== Search Suggestions ==="
+  echo "  Google: \"$name\" site:linkedin.com"
+  echo "  Google: \"$name\" email OR contact"
+  echo "  Google: \"$name\" site:github.com"
+  echo "  Google: \"$name\" resume OR CV filetype:pdf"
+  echo ""
+  dim "OSINT on individuals requires care. Only use on authorized targets."
+}
+
+usage(){
+  cat << 'EOF'
+
+  sentinel-osint — OSINT intelligence dashboard
+
+  Commands:
+    target <domain>    Full domain OSINT (WHOIS, DNS, certs, wayback, harvester)
+    email <address>    Email address intelligence
+    username <user>    Social media and platform search
+    person "<name>"    Person search suggestions
+
+  Tools used: whois, dig, curl, theHarvester, sherlock, h8mail
+  Results saved to: ~/.sentinel/osint/
+
+EOF
+}
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  target)   cmd_target "$@" ;;
+  email)    cmd_email "$@" ;;
+  username) cmd_username "$@" ;;
+  person)   cmd_person "$@" ;;
+  help|--help|-h) usage ;;
+  *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac
