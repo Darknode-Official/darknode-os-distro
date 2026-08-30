@@ -1,0 +1,556 @@
+#!/usr/bin/env bash
+# sentinel-sandbox — isolated virus/malware testing playground.
+#
+# Creates a disposable, network-isolated virtual environment where you can
+# safely detonate malware, analyze behavior, and study samples without risk
+# to the host or network. Everything runs inside a throwaway container or VM
+# that is destroyed after each session.
+#
+#   sentinel-sandbox start          — launch a fresh sandbox
+#   sentinel-sandbox start --gui    — launch with GUI (VNC access)
+#   sentinel-sandbox drop <file>    — copy a sample into the running sandbox
+#   sentinel-sandbox watch          — live monitor: filesystem, network, processes
+#   sentinel-sandbox snap           — snapshot current sandbox state
+#   sentinel-sandbox diff           — compare current state vs clean snapshot
+#   sentinel-sandbox report         — generate behavior analysis report
+#   sentinel-sandbox destroy        — tear down the sandbox completely
+#   sentinel-sandbox status         — show sandbox state
+#   sentinel-sandbox list-samples   — list dropped samples
+#   sentinel-sandbox network <on|off> — toggle sandbox internet (off by default)
+set -uo pipefail
+
+SANDBOX_DIR="$HOME/.sentinel/sandbox"
+SANDBOX_NAME="sentinel-sandbox"
+SANDBOX_IMG="sentinel-sandbox-base"
+LOG_DIR="$SANDBOX_DIR/logs"
+SAMPLES_DIR="$SANDBOX_DIR/samples"
+SNAPS_DIR="$SANDBOX_DIR/snapshots"
+REPORT_DIR="$SANDBOX_DIR/reports"
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+ts(){ date -u +%Y%m%d-%H%M%S; }
+
+mkdir -p "$SANDBOX_DIR" "$LOG_DIR" "$SAMPLES_DIR" "$SNAPS_DIR" "$REPORT_DIR"
+
+# ---- detect available isolation backend ----
+BACKEND=""
+if command -v docker >/dev/null 2>&1; then
+  BACKEND="docker"
+elif command -v podman >/dev/null 2>&1; then
+  BACKEND="podman"
+elif command -v qemu-system-x86_64 >/dev/null 2>&1; then
+  BACKEND="qemu"
+fi
+
+_require_backend(){
+  if [ -z "$BACKEND" ]; then
+    r "No isolation backend found. Install one of:"
+    echo "  docker   — recommended, fastest"
+    echo "  podman   — rootless alternative"
+    echo "  qemu     — full VM isolation (strongest)"
+    exit 1
+  fi
+}
+
+_is_running(){
+  case "$BACKEND" in
+    docker|podman) $BACKEND ps --format '{{.Names}}' 2>/dev/null | grep -qx "$SANDBOX_NAME" ;;
+    qemu) pgrep -f "sentinel-sandbox-vm" >/dev/null 2>&1 ;;
+  esac
+}
+
+# ---- build the sandbox base image ----
+_build_image(){
+  if [ "$BACKEND" = "docker" ] || [ "$BACKEND" = "podman" ]; then
+    if $BACKEND image inspect "$SANDBOX_IMG" >/dev/null 2>&1; then
+      return 0
+    fi
+    c "Building sandbox base image..."
+    cat > "$SANDBOX_DIR/Dockerfile" << 'DOCKERFILE'
+FROM debian:bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash coreutils procps psmisc net-tools iproute2 tcpdump strace ltrace \
+    file binutils strings hexdump xxd less vim-tiny curl wget \
+    python3 python3-pip \
+    inotify-tools auditd \
+    yara clamav clamav-daemon \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Monitoring scripts
+RUN mkdir -p /opt/sandbox /var/log/sandbox
+
+# Filesystem monitor
+COPY <<'FSMON' /opt/sandbox/fsmon.sh
+#!/bin/bash
+inotifywait -m -r --format '%T %e %w%f' --timefmt '%H:%M:%S' \
+  /tmp /home /var/tmp /root 2>/dev/null | tee -a /var/log/sandbox/fs.log
+FSMON
+
+# Process monitor
+COPY <<'PSMON' /opt/sandbox/psmon.sh
+#!/bin/bash
+while true; do
+  ps auxf --no-headers >> /var/log/sandbox/ps.log 2>/dev/null
+  echo "---$(date +%H:%M:%S)---" >> /var/log/sandbox/ps.log
+  sleep 2
+done
+PSMON
+
+# Network monitor
+COPY <<'NETMON' /opt/sandbox/netmon.sh
+#!/bin/bash
+tcpdump -i any -nn -l -q 2>/dev/null | tee -a /var/log/sandbox/net.log
+NETMON
+
+# Behavior diff tool
+COPY <<'BDIFF' /opt/sandbox/bdiff.sh
+#!/bin/bash
+echo "=== New/modified files ==="
+find / -newer /var/log/sandbox/.baseline -not -path '/proc/*' -not -path '/sys/*' \
+  -not -path '/var/log/sandbox/*' -type f 2>/dev/null
+echo ""
+echo "=== New processes ==="
+comm -13 <(sort /var/log/sandbox/ps_baseline.txt) <(ps aux --no-headers | awk '{print $11}' | sort) 2>/dev/null
+echo ""
+echo "=== Network connections ==="
+ss -tlnp 2>/dev/null
+echo ""
+echo "=== New users ==="
+comm -13 <(sort /var/log/sandbox/users_baseline.txt) <(cut -d: -f1 /etc/passwd | sort) 2>/dev/null
+echo ""
+echo "=== Crontabs ==="
+for u in $(cut -d: -f1 /etc/passwd); do crontab -l -u $u 2>/dev/null | grep -v '^#' | grep -v '^$' && echo "  (user: $u)"; done
+echo ""
+echo "=== Modified system files ==="
+find /etc /usr/bin /usr/sbin -newer /var/log/sandbox/.baseline -type f 2>/dev/null
+BDIFF
+
+RUN chmod +x /opt/sandbox/*.sh
+
+# Create baseline snapshot
+RUN touch /var/log/sandbox/.baseline && \
+    ps aux --no-headers | awk '{print $11}' | sort > /var/log/sandbox/ps_baseline.txt && \
+    cut -d: -f1 /etc/passwd | sort > /var/log/sandbox/users_baseline.txt
+
+WORKDIR /home/sandbox
+CMD ["/bin/bash"]
+DOCKERFILE
+    $BACKEND build -t "$SANDBOX_IMG" -f "$SANDBOX_DIR/Dockerfile" "$SANDBOX_DIR" 2>&1 | tail -5
+    g "Sandbox image built."
+  fi
+}
+
+# ---- start sandbox ----
+cmd_start(){
+  _require_backend
+  if _is_running; then
+    y "Sandbox is already running. Use 'sentinel-sandbox destroy' first."
+    return 0
+  fi
+
+  local gui=false
+  [ "${1:-}" = "--gui" ] && gui=true
+
+  case "$BACKEND" in
+    docker|podman)
+      _build_image
+      local net_flag="--network=none"
+      local extra_flags="--rm --name $SANDBOX_NAME --hostname sandbox"
+      extra_flags="$extra_flags --cap-drop=ALL --cap-add=SYS_PTRACE"
+      extra_flags="$extra_flags --security-opt=no-new-privileges"
+      extra_flags="$extra_flags --memory=512m --cpus=1"
+      extra_flags="$extra_flags -v $SAMPLES_DIR:/samples:ro"
+      extra_flags="$extra_flags -v $LOG_DIR:/var/log/sandbox"
+
+      if $gui; then
+        extra_flags="$extra_flags -p 127.0.0.1:5900:5900"
+        y "GUI mode: VNC available at localhost:5900 after startup"
+      fi
+
+      c "Launching isolated sandbox (network: OFF, memory: 512MB)..."
+      $BACKEND run -d $extra_flags $net_flag "$SANDBOX_IMG" \
+        bash -c "touch /var/log/sandbox/.baseline; /opt/sandbox/fsmon.sh & /opt/sandbox/psmon.sh & sleep infinity" \
+        >/dev/null 2>&1
+
+      # Take clean baseline
+      sleep 2
+      $BACKEND exec "$SANDBOX_NAME" bash -c \
+        "ps aux --no-headers | awk '{print \$11}' | sort > /var/log/sandbox/ps_baseline.txt; cut -d: -f1 /etc/passwd | sort > /var/log/sandbox/users_baseline.txt; touch /var/log/sandbox/.baseline" \
+        2>/dev/null
+
+      g "Sandbox is running."
+      echo ""
+      c "Quick start:"
+      echo "  sentinel-sandbox drop malware.exe    # copy a sample in"
+      echo "  sentinel-sandbox shell               # get a shell inside"
+      echo "  sentinel-sandbox watch               # live monitor"
+      echo "  sentinel-sandbox diff                # see what changed"
+      echo "  sentinel-sandbox report              # behavior analysis"
+      echo "  sentinel-sandbox destroy             # tear it all down"
+      echo ""
+      dim "The sandbox has NO network access by default."
+      dim "Use 'sentinel-sandbox network on' to enable (at your own risk)."
+      ;;
+
+    qemu)
+      c "QEMU sandbox: creating disposable VM..."
+      local disk="$SANDBOX_DIR/sandbox-disk.qcow2"
+      if [ ! -f "$disk" ]; then
+        qemu-img create -f qcow2 "$disk" 4G >/dev/null 2>&1
+        y "Created 4GB sandbox disk. Boot from a live ISO to set up."
+      fi
+      qemu-system-x86_64 -name sentinel-sandbox-vm \
+        -m 512 -smp 1 -enable-kvm \
+        -drive file="$disk",format=qcow2,snapshot=on \
+        -nic none \
+        -display none -daemonize 2>/dev/null
+      g "QEMU sandbox VM running (snapshot mode - changes are discarded)."
+      ;;
+  esac
+}
+
+# ---- get a shell inside the sandbox ----
+cmd_shell(){
+  _require_backend
+  if ! _is_running; then
+    r "Sandbox is not running. Start it with: sentinel-sandbox start"
+    return 1
+  fi
+  c "Entering sandbox shell (type 'exit' to leave)..."
+  y "WARNING: You are inside the sandbox. Anything you run here is isolated."
+  echo ""
+  $BACKEND exec -it "$SANDBOX_NAME" /bin/bash
+}
+
+# ---- drop a sample into the sandbox ----
+cmd_drop(){
+  local file="${1:?usage: sentinel-sandbox drop <file>}"
+  [ -f "$file" ] || { r "File not found: $file"; return 1; }
+
+  local name=$(basename "$file")
+  local stamp=$(ts)
+  local dest="$SAMPLES_DIR/${stamp}_${name}"
+
+  cp "$file" "$dest"
+  chmod 444 "$dest"
+
+  # Log sample metadata
+  echo "[$stamp] $name" >> "$LOG_DIR/samples.log"
+  file "$file" >> "$LOG_DIR/samples.log"
+  sha256sum "$file" >> "$LOG_DIR/samples.log"
+  strings -n 8 "$file" 2>/dev/null | head -20 >> "$LOG_DIR/samples.log"
+  echo "---" >> "$LOG_DIR/samples.log"
+
+  g "Sample dropped: $name"
+  echo "  SHA256: $(sha256sum "$file" | cut -d' ' -f1)"
+  echo "  Type:   $(file -b "$file")"
+  echo ""
+  if _is_running; then
+    echo "  Inside sandbox:  /samples/${stamp}_${name}"
+    echo "  To run it:       sentinel-sandbox shell"
+    echo "                   cd /samples && ./${stamp}_${name}"
+  else
+    y "  Sandbox not running. Start it with: sentinel-sandbox start"
+  fi
+}
+
+# ---- live monitoring ----
+cmd_watch(){
+  _require_backend
+  if ! _is_running; then
+    r "Sandbox is not running."
+    return 1
+  fi
+  c "Live sandbox monitor (Ctrl+C to stop)..."
+  echo ""
+  $BACKEND exec "$SANDBOX_NAME" bash -c '
+    echo "=== PROCESS MONITOR ==="
+    (while true; do
+      clear
+      echo -e "\e[1;36m=== PROCESSES ===\e[0m"
+      ps auxf --no-headers 2>/dev/null | head -20
+      echo ""
+      echo -e "\e[1;36m=== NETWORK CONNECTIONS ===\e[0m"
+      ss -tlnp 2>/dev/null
+      echo ""
+      echo -e "\e[1;36m=== RECENT FILE CHANGES ===\e[0m"
+      tail -10 /var/log/sandbox/fs.log 2>/dev/null
+      echo ""
+      echo -e "\e[1;36m=== RECENT NETWORK ACTIVITY ===\e[0m"
+      tail -5 /var/log/sandbox/net.log 2>/dev/null
+      sleep 3
+    done)
+  '
+}
+
+# ---- take a snapshot ----
+cmd_snap(){
+  _require_backend
+  if ! _is_running; then
+    r "Sandbox is not running."
+    return 1
+  fi
+  local stamp=$(ts)
+  local snapfile="$SNAPS_DIR/snap-$stamp.tar.gz"
+
+  c "Taking snapshot..."
+  $BACKEND exec "$SANDBOX_NAME" bash -c \
+    "tar czf /tmp/snap.tar.gz --exclude=/proc --exclude=/sys --exclude=/dev /home /tmp /var/tmp /etc /var/log 2>/dev/null"
+  $BACKEND cp "$SANDBOX_NAME:/tmp/snap.tar.gz" "$snapfile" 2>/dev/null
+  g "Snapshot saved: $snapfile ($(du -h "$snapfile" | cut -f1))"
+}
+
+# ---- diff against baseline ----
+cmd_diff(){
+  _require_backend
+  if ! _is_running; then
+    r "Sandbox is not running."
+    return 1
+  fi
+  c "Comparing against clean baseline..."
+  echo ""
+  $BACKEND exec "$SANDBOX_NAME" /opt/sandbox/bdiff.sh
+}
+
+# ---- generate behavior report ----
+cmd_report(){
+  _require_backend
+  if ! _is_running; then
+    r "Sandbox is not running."
+    return 1
+  fi
+
+  local stamp=$(ts)
+  local report="$REPORT_DIR/report-$stamp.md"
+
+  c "Generating behavior analysis report..."
+
+  {
+    echo "# Sandbox Behavior Report"
+    echo "_$(date -u)_"
+    echo ""
+    echo "## Environment"
+    echo "- Backend: $BACKEND"
+    echo "- Network: $($BACKEND exec "$SANDBOX_NAME" ip link show 2>/dev/null | grep -c 'state UP') interfaces up"
+    echo ""
+
+    echo "## Dropped Samples"
+    if [ -f "$LOG_DIR/samples.log" ]; then
+      echo '```'
+      cat "$LOG_DIR/samples.log"
+      echo '```'
+    else
+      echo "No samples dropped."
+    fi
+    echo ""
+
+    echo "## File System Changes"
+    echo '```'
+    $BACKEND exec "$SANDBOX_NAME" bash -c \
+      "find / -newer /var/log/sandbox/.baseline -not -path '/proc/*' -not -path '/sys/*' -not -path '/var/log/sandbox/*' -type f 2>/dev/null" 2>/dev/null
+    echo '```'
+    echo ""
+
+    echo "## Process Activity"
+    echo '```'
+    $BACKEND exec "$SANDBOX_NAME" ps auxf --no-headers 2>/dev/null
+    echo '```'
+    echo ""
+
+    echo "## Network Connections"
+    echo '```'
+    $BACKEND exec "$SANDBOX_NAME" ss -tlnp 2>/dev/null
+    echo '```'
+    echo ""
+
+    echo "## Network Traffic Log"
+    echo '```'
+    tail -50 "$LOG_DIR/net.log" 2>/dev/null || echo "(no network activity)"
+    echo '```'
+    echo ""
+
+    echo "## New Users"
+    echo '```'
+    $BACKEND exec "$SANDBOX_NAME" bash -c \
+      "comm -13 <(sort /var/log/sandbox/users_baseline.txt) <(cut -d: -f1 /etc/passwd | sort)" 2>/dev/null
+    echo '```'
+    echo ""
+
+    echo "## Crontabs"
+    echo '```'
+    $BACKEND exec "$SANDBOX_NAME" bash -c \
+      "for u in \$(cut -d: -f1 /etc/passwd); do crontab -l -u \$u 2>/dev/null | grep -v '^#' | grep -v '^\$'; done" 2>/dev/null
+    echo '```'
+    echo ""
+
+    echo "## Modified System Files"
+    echo '```'
+    $BACKEND exec "$SANDBOX_NAME" bash -c \
+      "find /etc /usr/bin /usr/sbin -newer /var/log/sandbox/.baseline -type f 2>/dev/null" 2>/dev/null
+    echo '```'
+  } > "$report"
+
+  g "Report saved: $report"
+  echo "  View: cat $report"
+  echo "  Or:   sentinel-sandbox report | less"
+  cat "$report"
+}
+
+# ---- toggle network ----
+cmd_network(){
+  _require_backend
+  local state="${1:?usage: sentinel-sandbox network <on|off>}"
+
+  if ! _is_running; then
+    r "Sandbox is not running."
+    return 1
+  fi
+
+  case "$BACKEND" in
+    docker|podman)
+      if [ "$state" = "on" ]; then
+        y "WARNING: Enabling network access. Malware may phone home or spread."
+        echo "Are you sure? (type YES to confirm)"
+        read -r confirm
+        [ "$confirm" = "YES" ] || { echo "Aborted."; return 1; }
+
+        $BACKEND network connect bridge "$SANDBOX_NAME" 2>/dev/null
+        # Start network capture
+        $BACKEND exec -d "$SANDBOX_NAME" /opt/sandbox/netmon.sh 2>/dev/null
+        g "Network ENABLED. All traffic is being logged."
+        r "The malware can now reach the internet. Be careful."
+      else
+        $BACKEND network disconnect bridge "$SANDBOX_NAME" 2>/dev/null
+        g "Network DISABLED. Sandbox is isolated again."
+      fi
+      ;;
+  esac
+}
+
+# ---- destroy sandbox ----
+cmd_destroy(){
+  _require_backend
+  c "Destroying sandbox..."
+
+  case "$BACKEND" in
+    docker|podman)
+      $BACKEND stop "$SANDBOX_NAME" 2>/dev/null
+      $BACKEND rm -f "$SANDBOX_NAME" 2>/dev/null
+      ;;
+    qemu)
+      pkill -f "sentinel-sandbox-vm" 2>/dev/null
+      rm -f "$SANDBOX_DIR/sandbox-disk.qcow2"
+      ;;
+  esac
+
+  g "Sandbox destroyed. All changes are gone."
+  dim "Samples are preserved in: $SAMPLES_DIR"
+  dim "Logs are preserved in: $LOG_DIR"
+  dim "Reports are preserved in: $REPORT_DIR"
+}
+
+# ---- status ----
+cmd_status(){
+  _require_backend
+  echo ""
+  c "Sentinel Sandbox Status"
+  echo ""
+
+  if _is_running; then
+    g "  State: RUNNING"
+    echo "  Backend: $BACKEND"
+    case "$BACKEND" in
+      docker|podman)
+        echo "  Memory: $($BACKEND stats --no-stream --format '{{.MemUsage}}' "$SANDBOX_NAME" 2>/dev/null)"
+        echo "  CPU:    $($BACKEND stats --no-stream --format '{{.CPUPerc}}' "$SANDBOX_NAME" 2>/dev/null)"
+        local nets=$($BACKEND inspect "$SANDBOX_NAME" --format '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' 2>/dev/null)
+        [ -z "$nets" ] && echo "  Network: ISOLATED (no network)" || echo "  Network: CONNECTED"
+        ;;
+    esac
+    echo "  Samples: $(ls "$SAMPLES_DIR" 2>/dev/null | wc -l) dropped"
+    echo "  Reports: $(ls "$REPORT_DIR" 2>/dev/null | wc -l) generated"
+  else
+    r "  State: STOPPED"
+    echo "  Start with: sentinel-sandbox start"
+  fi
+  echo ""
+}
+
+# ---- list samples ----
+cmd_list_samples(){
+  c "Dropped Samples"
+  echo ""
+  if [ -d "$SAMPLES_DIR" ] && [ "$(ls -A "$SAMPLES_DIR" 2>/dev/null)" ]; then
+    for f in "$SAMPLES_DIR"/*; do
+      local name=$(basename "$f")
+      local size=$(du -h "$f" | cut -f1)
+      local hash=$(sha256sum "$f" | cut -c1-16)
+      local type=$(file -b "$f" | cut -c1-40)
+      echo "  $name  ($size)  $hash...  $type"
+    done
+  else
+    dim "  No samples dropped yet."
+    echo "  Drop one: sentinel-sandbox drop malware.exe"
+  fi
+  echo ""
+}
+
+# ---- usage ----
+usage(){
+  cat << 'USAGE'
+
+  sentinel-sandbox — isolated malware analysis playground
+
+  Commands:
+    start [--gui]     Launch a fresh, network-isolated sandbox
+    shell             Get a shell inside the sandbox
+    drop <file>       Copy a sample into the sandbox
+    watch             Live monitor: processes, files, network
+    snap              Take a filesystem snapshot
+    diff              Compare current state vs clean baseline
+    report            Generate a behavior analysis report
+    destroy           Tear down the sandbox completely
+    status            Show sandbox state
+    list-samples      List all dropped samples
+    network <on|off>  Toggle internet access (off by default)
+
+  The sandbox runs in a disposable container with:
+    - No network access (by default)
+    - Dropped capabilities (no privilege escalation)
+    - Memory limit (512MB)
+    - CPU limit (1 core)
+    - Read-only sample mount
+    - Automatic filesystem/process/network monitoring
+    - Clean baseline for behavioral diffing
+
+  Everything is destroyed on 'sentinel-sandbox destroy'.
+  Samples, logs, and reports are preserved on the host.
+
+USAGE
+}
+
+# ---- dispatch ----
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  start)        cmd_start "$@" ;;
+  shell)        cmd_shell ;;
+  drop)         cmd_drop "$@" ;;
+  watch)        cmd_watch ;;
+  snap)         cmd_snap ;;
+  diff)         cmd_diff ;;
+  report)       cmd_report ;;
+  destroy)      cmd_destroy ;;
+  status)       cmd_status ;;
+  list-samples) cmd_list_samples ;;
+  network)      cmd_network "$@" ;;
+  help|--help|-h) usage ;;
+  *)            r "Unknown command: $cmd"; usage; exit 1 ;;
+esac
