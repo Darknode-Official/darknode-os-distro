@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Sentinel control center — toggle modes (Predator-OS/kali-tweaks style).
+set -uo pipefail
 command -v whiptail >/dev/null || { echo "install whiptail"; exit 1; }
 while C=$(whiptail --title "Sentinel Tweaks" --menu "Mode / action" 20 64 11 \
   anon-on "Route ALL traffic through Tor (+kill-switch)" \

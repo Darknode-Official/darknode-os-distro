@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # sentinel-greeting — a branded banner shown on new interactive shells.
+set -uo pipefail
 T=$'\e[38;5;44m'; B=$'\e[1m'; D=$'\e[38;5;245m'; W=$'\e[38;5;231m'; R=$'\e[0m'
 os="$( . /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-Linux}")"
 k="$(uname -r)"

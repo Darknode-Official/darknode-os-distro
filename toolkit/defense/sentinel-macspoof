@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Randomize (or restore) the MAC of an interface. Default: first non-lo iface.
+set -uo pipefail
 [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
 IF="${2:-$(ip -o link show | awk -F': ' '$2!="lo"{print $2; exit}')}"
 case "${1:-random}" in
