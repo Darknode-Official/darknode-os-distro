@@ -19,7 +19,11 @@
 #   sentinel-sandbox library         — browse the built-in sample library
 #   sentinel-sandbox library load <name> — load a sample from the library
 #   sentinel-sandbox network <on|off> — toggle sandbox internet (off by default)
+#   sentinel-sandbox fetch <hash|url>  — download a real sample from MalwareBazaar/VirusTotal
+#   sentinel-sandbox terms             — show terms and conditions
 set -uo pipefail
+
+TERMS_ACCEPTED_FILE="$HOME/.sentinel/sandbox/.terms_accepted"
 
 SANDBOX_DIR="$HOME/.sentinel/sandbox"
 SANDBOX_NAME="sentinel-sandbox"
@@ -1117,6 +1121,224 @@ cmd_library(){
   esac
 }
 
+# ---- terms and conditions ----
+TERMS_TEXT='
+================================================================================
+         SENTINEL SANDBOX — TERMS AND CONDITIONS OF USE
+================================================================================
+
+By using the Sentinel Sandbox malware analysis playground, you acknowledge
+and agree to the following:
+
+1. QUALIFIED USE ONLY
+   This tool is intended for qualified security professionals, researchers,
+   and students operating in authorized environments. You represent that you
+   have the technical knowledge to safely handle malware samples.
+
+2. ASSUMPTION OF RISK
+   YOU USE THIS TOOL ENTIRELY AT YOUR OWN RISK. The developers, maintainers,
+   and contributors of Sentinel OS accept NO LIABILITY for any damage,
+   data loss, infection, or other harm caused by:
+   - Malware samples escaping the sandbox
+   - Misconfiguration of the sandbox environment
+   - Downloading or executing real malware samples
+   - Network exposure of the sandbox
+   - Any other use or misuse of this tool
+
+3. NO WARRANTY
+   This software is provided "AS IS" without warranty of any kind. The
+   sandbox isolation is best-effort and NOT guaranteed to contain all
+   malware. Some advanced samples (kernel exploits, hypervisor escapes)
+   may break out of containerized environments.
+
+4. LEGAL COMPLIANCE
+   You are solely responsible for ensuring your use complies with all
+   applicable laws. Downloading, possessing, or analyzing malware may be
+   regulated in your jurisdiction. Unauthorized use of malware against
+   systems you do not own is illegal.
+
+5. NETWORK ISOLATION
+   The sandbox starts with NO network access. If you enable networking,
+   malware MAY contact external servers, download additional payloads,
+   or attempt to spread. This is YOUR responsibility.
+
+6. REAL SAMPLES
+   When downloading real malware from external databases (MalwareBazaar,
+   VirusTotal), you are obtaining ACTUAL MALICIOUS SOFTWARE. Handle with
+   extreme care. Never execute real malware outside the sandbox.
+
+7. EDUCATIONAL PURPOSE
+   The built-in sample library contains educational scripts that
+   demonstrate real techniques safely. External downloads are real malware.
+
+================================================================================
+   By typing ACCEPT below, you confirm you have read, understood, and
+   agree to these terms. You accept full responsibility for your actions.
+================================================================================
+'
+
+cmd_terms(){
+  echo "$TERMS_TEXT"
+}
+
+_check_terms(){
+  if [ -f "$TERMS_ACCEPTED_FILE" ]; then
+    return 0
+  fi
+  echo "$TERMS_TEXT"
+  echo ""
+  printf "  Type ACCEPT to agree: "
+  read -r response
+  if [ "$response" = "ACCEPT" ]; then
+    mkdir -p "$(dirname "$TERMS_ACCEPTED_FILE")"
+    echo "accepted=$(date -u)" > "$TERMS_ACCEPTED_FILE"
+    g "Terms accepted. You may now use the sandbox."
+    return 0
+  else
+    r "Terms not accepted. Cannot continue."
+    return 1
+  fi
+}
+
+# ---- fetch real samples from external databases ----
+cmd_fetch(){
+  _check_terms || return 1
+
+  local query="${1:?usage: sentinel-sandbox fetch <sha256_hash|malwarebazaar_url>}"
+  local stamp=$(ts)
+
+  y "WARNING: You are about to download REAL MALWARE."
+  y "Only do this inside the sandbox or on an isolated analysis machine."
+  echo ""
+  printf "  Type YES to continue: "
+  read -r confirm
+  [ "$confirm" = "YES" ] || { echo "Aborted."; return 1; }
+
+  local outfile="$SAMPLES_DIR/${stamp}_${query:0:16}"
+
+  # Try MalwareBazaar first (free, no API key needed for hash lookups)
+  if [[ "$query" =~ ^[a-fA-F0-9]{64}$ ]]; then
+    c "Fetching from MalwareBazaar (SHA256: ${query:0:16}...)..."
+    local result=$(curl -s -X POST "https://mb-api.abuse.ch/api/v1/" \
+      -d "query=get_file" -d "sha256_hash=$query" \
+      -o "$outfile.zip" -w "%{http_code}" 2>/dev/null)
+
+    if [ "$result" = "200" ] && [ -f "$outfile.zip" ] && [ "$(wc -c < "$outfile.zip")" -gt 100 ]; then
+      g "Downloaded from MalwareBazaar."
+      echo "  File: $outfile.zip"
+      echo "  Password: infected (standard MalwareBazaar password)"
+      echo ""
+      echo "  To extract inside sandbox:"
+      echo "    sentinel-sandbox shell"
+      echo "    cd /samples && unzip -P infected ${stamp}_${query:0:16}.zip"
+      echo ""
+      y "  DANGER: This is REAL MALWARE. Handle with extreme caution."
+      echo "  SHA256: $query"
+      echo "$query" >> "$LOG_DIR/fetched_samples.log"
+      return 0
+    fi
+    rm -f "$outfile.zip"
+  fi
+
+  # Try VirusTotal (requires API key)
+  local vt_key="${VT_API_KEY:-}"
+  if [ -z "$vt_key" ]; then
+    vt_key=$(cat "$HOME/.sentinel/vt_api_key" 2>/dev/null || echo "")
+  fi
+
+  if [ -n "$vt_key" ] && [[ "$query" =~ ^[a-fA-F0-9]{64}$ ]]; then
+    c "Fetching from VirusTotal..."
+    local result=$(curl -s -H "x-apikey: $vt_key" \
+      "https://www.virustotal.com/api/v3/files/$query/download" \
+      -o "$outfile.bin" -w "%{http_code}" 2>/dev/null)
+
+    if [ "$result" = "200" ] && [ -f "$outfile.bin" ] && [ "$(wc -c < "$outfile.bin")" -gt 100 ]; then
+      g "Downloaded from VirusTotal."
+      echo "  File: $outfile.bin"
+      echo "  SHA256: $query"
+      y "  DANGER: This is REAL MALWARE."
+      echo "$query" >> "$LOG_DIR/fetched_samples.log"
+      return 0
+    fi
+    rm -f "$outfile.bin"
+    y "VirusTotal download failed (may need premium API key for downloads)."
+  fi
+
+  # Try MalwareBazaar tag/signature search
+  if [[ ! "$query" =~ ^[a-fA-F0-9]{64}$ ]]; then
+    c "Searching MalwareBazaar for: $query..."
+    local results=$(curl -s -X POST "https://mb-api.abuse.ch/api/v1/" \
+      -d "query=get_taginfo" -d "tag=$query" -d "limit=10" 2>/dev/null)
+    local count=$(echo "$results" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('data',[])))" 2>/dev/null || echo "0")
+
+    if [ "$count" -gt 0 ]; then
+      echo ""
+      c "Found $count samples tagged '$query':"
+      echo "$results" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for s in d.get('data',[])[:10]:
+    print(f\"  {s.get('sha256_hash','?')[:16]}...  {s.get('file_type','?'):12s}  {s.get('signature','?'):20s}  {s.get('first_seen','?')[:10]}\")
+" 2>/dev/null
+      echo ""
+      echo "  To download: sentinel-sandbox fetch <full_sha256_hash>"
+    else
+      y "No results found for: $query"
+      echo "  Try: a SHA256 hash, or a tag like 'emotet', 'wannacry', 'cobalt-strike'"
+    fi
+    return 0
+  fi
+
+  r "Could not fetch sample. Check the hash and try again."
+  echo "  MalwareBazaar: free, no API key needed"
+  echo "  VirusTotal: set VT_API_KEY env var or save to ~/.sentinel/vt_api_key"
+}
+
+# ---- search malware databases ----
+cmd_search(){
+  local query="${1:?usage: sentinel-sandbox search <tag|family|type>}"
+  c "Searching MalwareBazaar for: $query..."
+  echo ""
+
+  # Try tag search
+  local results=$(curl -s -X POST "https://mb-api.abuse.ch/api/v1/" \
+    -d "query=get_taginfo" -d "tag=$query" -d "limit=15" 2>/dev/null)
+  local count=$(echo "$results" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('data',[])))" 2>/dev/null || echo "0")
+
+  if [ "$count" -gt 0 ]; then
+    printf "  %-18s %-14s %-22s %s\n" "SHA256" "TYPE" "SIGNATURE" "FIRST SEEN"
+    printf "  %-18s %-14s %-22s %s\n" "---" "---" "---" "---"
+    echo "$results" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for s in d.get('data',[])[:15]:
+    print(f\"  {s.get('sha256_hash','?')[:16]}..  {s.get('file_type','?'):14s}{s.get('signature','unknown'):22s}{s.get('first_seen','?')[:10]}\")
+" 2>/dev/null
+    echo ""
+    echo "  Download: sentinel-sandbox fetch <full_sha256>"
+    echo "  Total results: $count"
+  else
+    # Try signature search
+    results=$(curl -s -X POST "https://mb-api.abuse.ch/api/v1/" \
+      -d "query=get_siginfo" -d "signature=$query" -d "limit=15" 2>/dev/null)
+    count=$(echo "$results" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('data',[])))" 2>/dev/null || echo "0")
+
+    if [ "$count" -gt 0 ]; then
+      echo "  Found $count samples matching signature '$query':"
+      echo "$results" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for s in d.get('data',[])[:10]:
+    print(f\"  {s.get('sha256_hash','?')[:16]}..  {s.get('file_type','?'):12s}  {s.get('first_seen','?')[:10]}\")
+" 2>/dev/null
+      echo ""
+      echo "  Download: sentinel-sandbox fetch <full_sha256>"
+    else
+      y "No results. Try tags like: emotet, wannacry, cobalt-strike, trickbot, qakbot, redline"
+    fi
+  fi
+}
+
 # ---- usage ----
 usage(){
   cat << 'USAGE'
@@ -1124,6 +1346,7 @@ usage(){
   sentinel-sandbox — isolated malware analysis playground
 
   Commands:
+    terms             Show terms and conditions
     start [--gui]     Launch a fresh, network-isolated sandbox
     shell             Get a shell inside the sandbox
     drop <file>       Copy a sample into the sandbox
@@ -1134,22 +1357,26 @@ usage(){
     destroy           Tear down the sandbox completely
     status            Show sandbox state
     list-samples      List all dropped samples
-    library           Browse the built-in malware sample library
+    library           Browse the built-in sample library (educational)
     library load <n>  Load a sample from the library
     library load-all  Load all library samples
+    search <query>    Search MalwareBazaar for real samples
+    fetch <hash>      Download a real sample from MalwareBazaar/VirusTotal
     network <on|off>  Toggle internet access (off by default)
 
-  Sample Library Categories:
-    Persistence       Cron, systemd, bashrc, rc.local backdoors
-    Evasion           Process spoofing, timestomping, log cleaning, packing
-    Credential Theft  Keyloggers, credential harvesters
-    C2 Communication  DNS beacons, HTTP beacons, reverse shells
-    Ransomware        File encryption simulation (with decryptor)
-    Rootkit           LD_PRELOAD hooking, process injection
-    Exfiltration      DNS/HTTP/ICMP/steganography data theft
-    Lateral Movement  Worm propagation simulation
-    Fileless          Memory-only malware techniques
-    Privilege Esc.    SUID backdoors
+  Built-in Library (safe, educational):
+    Persistence, Evasion, Credential Theft, C2, Ransomware,
+    Rootkit, Exfiltration, Lateral Movement, Fileless, Privesc
+
+  External Databases (REAL MALWARE — requires terms acceptance):
+    MalwareBazaar    Free, no API key needed (abuse.ch)
+    VirusTotal       Set VT_API_KEY or save to ~/.sentinel/vt_api_key
+
+  Safety:
+    - Sandbox starts with NO network access
+    - All changes are destroyed with 'sentinel-sandbox destroy'
+    - Real samples require explicit terms acceptance
+    - Samples are logged with SHA256 hashes
 
 USAGE
 }
@@ -1159,7 +1386,8 @@ cmd="${1:-help}"
 shift 2>/dev/null || true
 
 case "$cmd" in
-  start)        cmd_start "$@" ;;
+  terms)        cmd_terms ;;
+  start)        _check_terms && cmd_start "$@" ;;
   shell)        cmd_shell ;;
   drop)         cmd_drop "$@" ;;
   watch)        cmd_watch ;;
@@ -1170,6 +1398,8 @@ case "$cmd" in
   status)       cmd_status ;;
   list-samples) cmd_list_samples ;;
   library)      cmd_library "$@" ;;
+  fetch)        cmd_fetch "$@" ;;
+  search)       cmd_search "$@" ;;
   network)      cmd_network "$@" ;;
   help|--help|-h) usage ;;
   *)            r "Unknown command: $cmd"; usage; exit 1 ;;
