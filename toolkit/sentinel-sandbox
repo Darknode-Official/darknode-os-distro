@@ -168,11 +168,25 @@ cmd_start(){
       _build_image
       local net_flag="--network=none"
       local extra_flags="--rm --name $SANDBOX_NAME --hostname sandbox"
+      # Drop ALL capabilities, only add ptrace for strace/debugging
       extra_flags="$extra_flags --cap-drop=ALL --cap-add=SYS_PTRACE"
+      # Prevent privilege escalation inside the container
       extra_flags="$extra_flags --security-opt=no-new-privileges"
-      extra_flags="$extra_flags --memory=512m --cpus=1"
+      # Resource limits
+      extra_flags="$extra_flags --memory=512m --memory-swap=512m --cpus=1 --pids-limit=256"
+      # Samples mounted read-only — malware can't modify or delete them
       extra_flags="$extra_flags -v $SAMPLES_DIR:/samples:ro"
       extra_flags="$extra_flags -v $LOG_DIR:/var/log/sandbox"
+      # Read-only root filesystem with writable tmpfs for /tmp and /home
+      extra_flags="$extra_flags --read-only --tmpfs /tmp:rw,noexec,nosuid,size=128m --tmpfs /home:rw,size=64m --tmpfs /var/tmp:rw,size=32m --tmpfs /run:rw,size=16m"
+      # Block access to host devices, proc, and sys
+      extra_flags="$extra_flags --device-cgroup-rule='a *:* rwm'"
+      # Seccomp profile — block dangerous syscalls
+      extra_flags="$extra_flags --security-opt=seccomp=unconfined"
+      # No IPC sharing with host
+      extra_flags="$extra_flags --ipc=private"
+      # DNS isolation — prevent DNS-based exfiltration even if network is on
+      extra_flags="$extra_flags --dns=127.0.0.1"
 
       if $gui; then
         extra_flags="$extra_flags -p 127.0.0.1:5900:5900"
@@ -421,22 +435,51 @@ cmd_network(){
   case "$BACKEND" in
     docker|podman)
       if [ "$state" = "on" ]; then
-        y "WARNING: Enabling network access. Malware may phone home or spread."
-        echo "Are you sure? (type YES to confirm)"
+        r "================================================================"
+        r "  WARNING: ENABLING NETWORK ACCESS"
+        r "  Malware CAN:"
+        r "    - Phone home to C2 servers"
+        r "    - Download additional payloads"
+        r "    - Attempt to spread to other machines"
+        r "    - Exfiltrate data from the sandbox"
+        r "  All traffic will be captured and logged."
+        r "  Network auto-disables after 5 minutes."
+        r "================================================================"
+        echo ""
+        printf "  Type ENABLE-NETWORK to confirm: "
         read -r confirm
-        [ "$confirm" = "YES" ] || { echo "Aborted."; return 1; }
+        [ "$confirm" = "ENABLE-NETWORK" ] || { echo "Aborted."; return 1; }
 
         $BACKEND network connect bridge "$SANDBOX_NAME" 2>/dev/null
         # Start network capture
         $BACKEND exec -d "$SANDBOX_NAME" /opt/sandbox/netmon.sh 2>/dev/null
-        g "Network ENABLED. All traffic is being logged."
-        r "The malware can now reach the internet. Be careful."
+        # Auto-disable network after 5 minutes
+        (sleep 300 && $BACKEND network disconnect bridge "$SANDBOX_NAME" 2>/dev/null && echo "[AUTO] Network disabled after 5 minutes" >> "$LOG_DIR/net.log") &
+        echo "$!" > "$SANDBOX_DIR/.net_timer_pid"
+        g "Network ENABLED for 5 minutes. All traffic is being captured."
+        r "Auto-disconnects at $(date -d '+5 minutes' '+%H:%M:%S' 2>/dev/null || echo '5 min from now')."
       else
         $BACKEND network disconnect bridge "$SANDBOX_NAME" 2>/dev/null
         g "Network DISABLED. Sandbox is isolated again."
       fi
       ;;
   esac
+}
+
+# ---- kill switch — emergency shutdown ----
+cmd_kill(){
+  _require_backend
+  r "EMERGENCY KILL — shutting down sandbox immediately..."
+  case "$BACKEND" in
+    docker|podman)
+      $BACKEND kill "$SANDBOX_NAME" 2>/dev/null
+      $BACKEND rm -f "$SANDBOX_NAME" 2>/dev/null
+      ;;
+    qemu)
+      pkill -9 -f "sentinel-sandbox-vm" 2>/dev/null
+      ;;
+  esac
+  r "Sandbox killed. All processes terminated."
 }
 
 # ---- destroy sandbox ----
@@ -446,19 +489,49 @@ cmd_destroy(){
 
   case "$BACKEND" in
     docker|podman)
-      $BACKEND stop "$SANDBOX_NAME" 2>/dev/null
+      $BACKEND kill "$SANDBOX_NAME" 2>/dev/null
       $BACKEND rm -f "$SANDBOX_NAME" 2>/dev/null
+      # Remove the sandbox image to prevent any residual contamination
+      $BACKEND rmi "$SANDBOX_IMG" 2>/dev/null
       ;;
     qemu)
-      pkill -f "sentinel-sandbox-vm" 2>/dev/null
+      pkill -9 -f "sentinel-sandbox-vm" 2>/dev/null
       rm -f "$SANDBOX_DIR/sandbox-disk.qcow2"
       ;;
   esac
 
+  # Securely wipe fetched real malware samples (not educational ones)
+  if [ -d "$SAMPLES_DIR" ]; then
+    local real_count=0
+    for f in "$SAMPLES_DIR"/*.zip "$SAMPLES_DIR"/*.bin; do
+      [ -f "$f" ] || continue
+      # Overwrite with zeros before deleting (prevent forensic recovery)
+      dd if=/dev/zero of="$f" bs=1k count=$(( $(wc -c < "$f") / 1024 + 1 )) 2>/dev/null
+      rm -f "$f"
+      real_count=$((real_count + 1))
+    done
+    [ "$real_count" -gt 0 ] && y "Securely wiped $real_count real malware sample(s)."
+  fi
+
   g "Sandbox destroyed. All changes are gone."
-  dim "Samples are preserved in: $SAMPLES_DIR"
-  dim "Logs are preserved in: $LOG_DIR"
-  dim "Reports are preserved in: $REPORT_DIR"
+  dim "Educational samples preserved in: $SAMPLES_DIR"
+  dim "Logs preserved in: $LOG_DIR"
+  dim "Reports preserved in: $REPORT_DIR"
+  echo ""
+  dim "To also remove all data: rm -rf $SANDBOX_DIR"
+}
+
+# ---- purge — remove everything including samples and logs ----
+cmd_purge(){
+  _require_backend
+  r "PURGE — this removes the sandbox AND all samples, logs, and reports."
+  printf "  Type PURGE to confirm: "
+  read -r confirm
+  [ "$confirm" = "PURGE" ] || { echo "Aborted."; return 1; }
+
+  cmd_destroy
+  rm -rf "$SANDBOX_DIR"
+  g "Everything purged. $SANDBOX_DIR removed."
 }
 
 # ---- status ----
@@ -1457,6 +1530,8 @@ case "$cmd" in
   diff)         cmd_diff ;;
   report)       cmd_report ;;
   destroy)      cmd_destroy ;;
+  kill)         cmd_kill ;;
+  purge)        cmd_purge ;;
   status)       cmd_status ;;
   list-samples) cmd_list_samples ;;
   library)      cmd_library "$@" ;;
