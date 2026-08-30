@@ -313,6 +313,7 @@ write_files:
       [Desktop Entry]
       Type=Application
       Name=Sentinel (cockpit)
+      Icon=utilities-system-monitor
       Exec=sentinel-app
       Terminal=false
       D
@@ -323,6 +324,7 @@ write_files:
       Name=Sentinel Autopilot
       Comment=Autonomous AI hacking — give a goal, the local agent runs it
       Exec=xfce4-terminal --title="Sentinel Autopilot" -e sentinel-autopilot
+      Icon=system-run
       Terminal=false
       D
       cat > /home/sentinel/Desktop/Autonomy.desktop <<'D'
@@ -331,6 +333,7 @@ write_files:
       Name=Sentinel Autonomy
       Comment=Persistent mission engine — the local AI pursues your goals on a schedule
       Exec=xfce4-terminal --title="Sentinel Autonomy" -e "bash -lc 'sentinel-autonomy list; echo; echo \"add:  sentinel-autonomy add <name> --goal \\\"...\\\" [--scope t] [--mode monitor|passive|active|goal] [--every 6h]\"; echo \"run persistently:  sentinel-autonomy enable\"; exec bash'"
+      Icon=appointment-recurring
       Terminal=false
       D
       cat > /home/sentinel/Desktop/Sentinel-Tweaks.desktop <<'D'
@@ -339,10 +342,15 @@ write_files:
       Name=Sentinel Tweaks
       Comment=Control center — anon mode, stealth, MAC spoof, arsenals, AI triage
       Exec=xfce4-terminal --title="Sentinel Tweaks" -e sentinel-tweaks
+      Icon=applications-utilities
       Terminal=false
       D
       chown sentinel:sentinel /home/sentinel/Desktop/*.desktop 2>/dev/null || true
       chmod +x /home/sentinel/Desktop/*.desktop 2>/dev/null || true
+      # Install Sentinel app desktop entries into the system menu
+      for df in /opt/sentinel-os/desktop/*.desktop; do
+        [ -f "$df" ] && cp "$df" /usr/share/applications/ 2>/dev/null
+      done
       fi   # end desktop cockpit shortcuts (WANT_GUI)
       # Branded shell: a Sentinel banner on new terminals + a teal Sentinel prompt
       if ! grep -q "sentinel-greeting" /home/sentinel/.bashrc 2>/dev/null; then
