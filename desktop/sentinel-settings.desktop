@@ -2,7 +2,7 @@
 Name=Sentinel Settings
 Comment=System and toolkit configuration
 Exec=sentinel-settings
-Icon=preferences-system
+Icon=preferences-desktop
 Terminal=true
 Type=Application
 Categories=Settings;System;

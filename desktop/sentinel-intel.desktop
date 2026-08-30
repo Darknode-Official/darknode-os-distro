@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Threat Intel
+Comment=CVE lookup, exploit search, IOC checking
+Exec=xfce4-terminal --title="Threat Intel" -e sentinel-intel
+Icon=dialog-warning
+Terminal=false
+Type=Application
+Categories=System;Security;

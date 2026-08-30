@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Virus Playground
+Comment=Isolated malware analysis sandbox with sample library
+Exec=xfce4-terminal --title="Virus Playground" -e "bash -lc 'sentinel-sandbox status; exec bash'"
+Icon=security-medium
+Terminal=false
+Type=Application
+Categories=System;Security;
