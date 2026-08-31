@@ -169,7 +169,8 @@ write_files:
         zaproxy wpscan arjun \
         chisel ligolo-ng pwncat \
         seclists payloadsallthethings fuzzdb \
-ettercap-text-only mitmproxy bettercap yersinia netsniff-ng dnschef sslstrip         commix xsser dirsearch         hashid hash-identifier ophcrack chntpw patator         bully cowpatty         volatility3 bulk-extractor oletools afflib-tools         apktool dex2jar upx-ucl patchelf checksec         sshuttle impacket-scripts metagoofil         searchsploit shellnoob routersploit"
+ettercap-text-only mitmproxy bettercap yersinia netsniff-ng dnschef sslstrip         commix xsser dirsearch         hashid hash-identifier ophcrack chntpw patator         bully cowpatty         volatility3 bulk-extractor oletools afflib-tools         apktool dex2jar upx-ucl patchelf checksec         sshuttle impacket-scripts metagoofil         searchsploit shellnoob routersploit \
+dnsenum fierce dnsmap dsniff tcpreplay tcpflow         mdk3 mdk4 hostapd         openvpn wireguard-tools         p7zip-full dos2unix tree fd-find exa         hashdeep ddrescue         zmap unicornscan         eyewitness         sublist3r         set jwt-tool nosqlmap graphqlmap"
       # DESKTOP — XFCE + GUI tools, added for slim & full (not netinstall).
       PKGS_DESKTOP="xfce4 xfce4-terminal xfce4-goodies xfce4-whiskermenu-plugin lightdm dbus-x11 \
         wireshark ettercap-graphical keepassxc desktop-file-utils \
@@ -218,6 +219,29 @@ ettercap-text-only mitmproxy bettercap yersinia netsniff-ng dnschef sslstrip    
       [ -d /opt/bloodhound ] || timeout 120 git clone --depth 1 https://github.com/BloodHoundAD/BloodHound /opt/bloodhound || true
       [ -d /opt/pacu ] || timeout 120 git clone --depth 1 https://github.com/RhinoSecurityLabs/pacu /opt/pacu || true
       [ -d /opt/prowler ] || timeout 120 git clone --depth 1 https://github.com/prowler-cloud/prowler /opt/prowler || true
+      # More tools via pip/git
+      pip3 install shodan censys 2>/dev/null || true
+      pipx install holehe 2>/dev/null || true
+      pipx install maigret 2>/dev/null || true
+      pipx install socialscan 2>/dev/null || true
+      pip3 install paramspider 2>/dev/null || true
+      # Go tools (if go is available)
+      if command -v go >/dev/null 2>&1; then
+        go install github.com/lc/gau/v2/cmd/gau@latest 2>/dev/null || true
+        go install github.com/tomnomnom/waybackurls@latest 2>/dev/null || true
+        go install github.com/hakluke/hakrawler@latest 2>/dev/null || true
+        go install github.com/projectdiscovery/katana/cmd/katana@latest 2>/dev/null || true
+        go install github.com/jaeles-project/gospider@latest 2>/dev/null || true
+        go install github.com/sensepost/gowitness@latest 2>/dev/null || true
+        go install github.com/RustScan/RustScan@latest 2>/dev/null || true
+        cp ~/go/bin/* /usr/local/bin/ 2>/dev/null || true
+      fi
+      # Sliver C2
+      [ -f /opt/sliver ] || timeout 300 bash -c 'curl -fsSL https://sliver.sh/install | bash' 2>/dev/null || true
+      # Terraform
+      command -v terraform >/dev/null 2>&1 || timeout 120 bash -c 'curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg; echo "deb [signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com bookworm main" > /etc/apt/sources.list.d/hashicorp.list; apt-get update && apt-get install -y terraform' 2>/dev/null || true
+      # Trivy
+      command -v trivy >/dev/null 2>&1 || timeout 120 bash -c 'curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin' 2>/dev/null || true
       # Local AI for autonomous hacking
       timeout 300 bash -c "curl -fsSL https://ollama.com/install.sh | sh" || echo OLLAMA-SKIP
       systemctl enable --now ollama 2>/dev/null || true
