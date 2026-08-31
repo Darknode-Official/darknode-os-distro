@@ -142,6 +142,24 @@ write_files:
         apt-get install -y linux-image-amd64 && { apt-get purge -y linux-image-cloud-amd64 2>/dev/null || true; }
       fi
       update-grub 2>/dev/null || true
+      # ---- Sentinel GRUB theme ----
+      mkdir -p /boot/grub/themes/sentinel
+      cp /opt/sentinel-os/boot/grub-theme/theme.txt /boot/grub/themes/sentinel/ 2>/dev/null
+      if [ -f /boot/grub/themes/sentinel/theme.txt ]; then
+        sed -i 's|^#*GRUB_THEME=.*|GRUB_THEME="/boot/grub/themes/sentinel/theme.txt"|' /etc/default/grub
+        grep -q GRUB_THEME /etc/default/grub || echo 'GRUB_THEME="/boot/grub/themes/sentinel/theme.txt"' >> /etc/default/grub
+        update-grub 2>/dev/null
+      fi
+      # ---- Plymouth boot splash ----
+      apt-get install -y plymouth plymouth-themes 2>/dev/null || true
+      mkdir -p /usr/share/plymouth/themes/sentinel
+      cp /opt/sentinel-os/boot/plymouth/sentinel/* /usr/share/plymouth/themes/sentinel/ 2>/dev/null
+      if [ -d /usr/share/plymouth/themes/sentinel ] && command -v plymouth-set-default-theme >/dev/null 2>&1; then
+        plymouth-set-default-theme sentinel 2>/dev/null
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"/' /etc/default/grub
+        update-initramfs -u 2>/dev/null || true
+        update-grub 2>/dev/null
+      fi
       echo "wireshark-common wireshark-common/install-setuid boolean true" | debconf-set-selections
       # Our own desktop (XFCE) + tools from Debian — installed one-by-one so a
       # single unavailable package can't abort the batch.
