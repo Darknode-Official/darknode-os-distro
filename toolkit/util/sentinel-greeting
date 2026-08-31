@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-set -uo pipefail
-# Sentinel OS terminal greeting — shows on new terminal
+# Sentinel OS terminal greeting — shows on new terminal.
+# Must NEVER error or produce extra output — runs in .bashrc on every shell.
 
 T='\e[38;2;0;234;255m'   # teal
-G='\e[38;2;63;185;80m'   # green
 P='\e[38;2;176;38;255m'  # purple
 D='\e[2m'                 # dim
 R='\e[0m'                 # reset
-B='\e[1m'                 # bold
 
-# Logo with gradient
 echo ""
 printf "${T}  ███████${P}███████${T}███╗   ██${P}████████${T}██╗${P}███╗   ██${T}███████${P}██╗     ${R}\n"
 printf "${T}  ██╔════${P}██╔════${T}████╗  ██${P}╚══██╔══${T}██║${P}████╗  ██${T}██╔════${P}██║     ${R}\n"
@@ -19,32 +16,31 @@ printf "${T}  ███████${P}███████${T}██   ██�
 printf "  ${D}>_ AI-powered security workstation${R}\n"
 echo ""
 
-# System info
-CPU=$(grep 'model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs | cut -c1-40)
-RAM=$(free -h 2>/dev/null | awk '/^Mem:/{print $3 "/" $2}')
-DISK=$(df -h / 2>/dev/null | awk 'NR==2{print $3 "/" $2}')
-IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-TOOLS=$(find /usr/bin /usr/sbin /usr/local/bin -maxdepth 1 -type f 2>/dev/null | wc -l)
-UP=$(uptime -p 2>/dev/null | sed 's/up //')
+# System info — all with fallbacks, no unset var errors
+cpu=$(grep 'model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs 2>/dev/null | cut -c1-40 || echo "unknown")
+ram=$(free -h 2>/dev/null | awk '/^Mem:/{print $3 "/" $2}' || echo "?")
+disk=$(df -h / 2>/dev/null | awk 'NR==2{print $3 "/" $2}' || echo "?")
+ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "offline")
+up=$(uptime -p 2>/dev/null | sed 's/up //' || echo "?")
 
-printf "  ${D}cpu${R}  ${CPU:-unknown}\n"
-printf "  ${D}mem${R}  ${RAM:-?}    ${D}disk${R}  ${DISK:-?}    ${D}up${R}  ${UP:-?}\n"
-printf "  ${D}ip${R}   ${IP:-offline}    ${D}tools${R}  ${TOOLS}\n"
+printf "  ${D}cpu${R}  %s\n" "${cpu:-unknown}"
+printf "  ${D}mem${R}  %s    ${D}disk${R}  %s    ${D}up${R}  %s\n" "${ram:-?}" "${disk:-?}" "${up:-?}"
+printf "  ${D}ip${R}   %s\n" "${ip:-offline}"
 echo ""
 
 # Random quote
-QUOTES=(
+quotes=(
   "The quieter you become, the more you can hear."
   "Hack the planet."
   "There is no patch for human stupidity."
   "Every system has a vulnerability. Find it."
-  "Knowledge is power. Especially the kind they don't want you to have."
+  "Knowledge is power."
   "Trust, but verify. Then verify again."
   "The best defense is a good offense."
-  "In the world of ones and zeros, you are the variable."
   "Stay curious. Stay dangerous."
+  "In the world of ones and zeros, you are the variable."
   "root@reality:~# whoami"
 )
-IDX=$((RANDOM % ${#QUOTES[@]}))
-printf "  ${D}\"${QUOTES[$IDX]}\"${R}\n"
+idx=$((RANDOM % ${#quotes[@]}))
+printf "  ${D}\"%s\"${R}\n" "${quotes[$idx]}"
 echo ""
