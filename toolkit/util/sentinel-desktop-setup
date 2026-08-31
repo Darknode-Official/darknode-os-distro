@@ -192,10 +192,21 @@ if xfconf-query -c xfce4-panel -p /panels/panel-1/plugin-ids >/dev/null 2>&1; th
   # clean clock (date + 24h time)
   xfconf-query -c xfce4-panel -p /plugins/plugin-12/digital-time-format -n -t string -s "%H:%M" 2>/dev/null || true
   xfconf-query -c xfce4-panel -p /plugins/plugin-12/digital-date-format -n -t string -s "%a %d %b" 2>/dev/null || true
-  # collapse to a single top panel (drop the bottom dock)
-  xfconf-query -c xfce4-panel -p /panels -a -t int -s 1 2>/dev/null
+  # Bottom dock — centered, translucent, with favorite app launchers
+  xfconf-query -c xfce4-panel -p /panels -n -a -t int -s 1 -t int -s 2 2>/dev/null
+  xfconf-query -c xfce4-panel -p /panels/panel-2/position -n -t string -s "p=8;x=0;y=0" 2>/dev/null
+  xfconf-query -c xfce4-panel -p /panels/panel-2/position-locked -n -t bool -s true 2>/dev/null
+  xfconf-query -c xfce4-panel -p /panels/panel-2/size -n -t int -s 48 2>/dev/null
+  xfconf-query -c xfce4-panel -p /panels/panel-2/length -n -t int -s 40 2>/dev/null
+  xfconf-query -c xfce4-panel -p /panels/panel-2/background-style -n -t int -s 1 2>/dev/null
+  xfconf-query -c xfce4-panel -p /panels/panel-2/background-rgba -n -a \
+    -t double -s 0.02 -t double -s 0.04 -t double -s 0.07 -t double -s 0.85 2>/dev/null
   xfce4-panel -r 2>/dev/null || true
 fi
+
+# --- cursor theme (DMZ-White is cleaner than the default X cursor) ---
+xfconf-query -c xsettings -p /Gtk/CursorThemeName -n -t string -s "DMZ-White" 2>/dev/null || true
+xfconf-query -c xsettings -p /Gtk/CursorThemeSize -n -t int -s 24 2>/dev/null || true
 
 # --- trust the desktop launchers so xfdesktop stops the "Untrusted application
 #     launcher" prompt on every double-click. It stores a SHA-256 of the file in

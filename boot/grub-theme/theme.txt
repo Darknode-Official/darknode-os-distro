@@ -1,0 +1,40 @@
+# Sentinel OS GRUB Theme
+title-text: ""
+desktop-color: "#050709"
+terminal-font: "Unifont Regular 16"
+terminal-left: "0"
+terminal-top: "0"
+terminal-width: "100%"
+terminal-height: "100%"
+
++ boot_menu {
+    left = 30%
+    top = 30%
+    width = 40%
+    height = 40%
+    item_color = "#8b949e"
+    selected_item_color = "#00eaff"
+    item_height = 30
+    item_padding = 10
+    item_spacing = 5
+}
+
++ label {
+    left = 30%
+    top = 22%
+    width = 40%
+    align = "center"
+    color = "#00eaff"
+    font = "Unifont Regular 20"
+    text = ">_ SENTINEL OS"
+}
+
++ label {
+    left = 30%
+    top = 90%
+    width = 40%
+    align = "center"
+    color = "#30363d"
+    font = "Unifont Regular 14"
+    text = "AI-powered security workstation"
+}

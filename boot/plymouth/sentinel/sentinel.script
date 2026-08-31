@@ -1,0 +1,44 @@
+# Sentinel OS Plymouth boot script — pulsing teal text
+Window.SetBackgroundTopColor(0.02, 0.03, 0.05);
+Window.SetBackgroundBottomColor(0.02, 0.03, 0.05);
+
+# Logo text
+logo.image = Image.Text(">_ SENTINEL OS", 0, 0.92, 1.0, 1, "Mono");
+logo.sprite = Sprite(logo.image);
+logo.sprite.SetX(Window.GetWidth() / 2 - logo.image.GetWidth() / 2);
+logo.sprite.SetY(Window.GetHeight() / 2 - 60);
+
+# Status text
+sub.image = Image.Text("security workstation", 0.55, 0.58, 0.62, 0.8, "Mono");
+sub.sprite = Sprite(sub.image);
+sub.sprite.SetX(Window.GetWidth() / 2 - sub.image.GetWidth() / 2);
+sub.sprite.SetY(Window.GetHeight() / 2);
+
+# Spinner dots
+dots = 5;
+dot_sprites = [];
+for (i = 0; i < dots; i++) {
+    dot_sprites[i] = Sprite();
+    dot_sprites[i].SetY(Window.GetHeight() / 2 + 60);
+}
+
+progress = 0;
+fun refresh_callback() {
+    progress++;
+    for (i = 0; i < dots; i++) {
+        phase = Math.Int((progress / 8 + i) % dots);
+        alpha = 0.2 + (phase == 0) * 0.8;
+        dot_image = Image.Text("*", 0, alpha, alpha, alpha, "Mono");
+        dot_sprites[i].SetImage(dot_image);
+        dot_sprites[i].SetX(Window.GetWidth() / 2 - dots * 10 + i * 20);
+    }
+}
+Plymouth.SetRefreshFunction(refresh_callback);
+
+fun message_callback(text) {
+    msg.image = Image.Text(text, 0.55, 0.58, 0.62, 0.6, "Mono");
+    msg.sprite = Sprite(msg.image);
+    msg.sprite.SetX(Window.GetWidth() / 2 - msg.image.GetWidth() / 2);
+    msg.sprite.SetY(Window.GetHeight() / 2 + 100);
+}
+Plymouth.SetMessageFunction(message_callback);
