@@ -286,14 +286,25 @@ write_files:
       timeout 300 npm install -g @modelcontextprotocol/server-memory @modelcontextprotocol/server-sequential-thinking @upstash/context7-mcp 2>/dev/null || echo "MCP-NPM-SKIP"
       if command -v uv >/dev/null 2>&1; then for pkg in mcp-server-fetch mcp-server-time mcp-server-git; do timeout 180 uv tool install "$pkg" 2>/dev/null || echo "MCP-UVX-SKIP $pkg"; done; fi
       # Sentinel toolkit — adopted-and-improved distro features + unique AI tools
-      for s in sentinel-ai sentinel-scope sentinel-recon sentinel-loot \
-               sentinel-harvest sentinel-agent sentinel-greeting \
-               sentinel-cheat sentinel-watch sentinel-catch sentinel-crack sentinel-pivot sentinel-autonomy \
-               sentinel-anon sentinel-macspoof sentinel-detonate sentinel-stealth \
-               sentinel-ask sentinel-triage sentinel-engage sentinel-arsenal \
-               sentinel-tweaks sentinel-lockout gen-sentinel-menu sentinel-desktop-setup; do
-        curl -fsSL "https://raw.githubusercontent.com/SpartanKing18/sentinel-os/main/toolkit/$s" -o "/usr/local/bin/$s" && chmod +x "/usr/local/bin/$s" || echo "TOOLKIT-SKIP $s"
-      done
+      # Install all toolkit scripts from the local clone (resolves symlinks properly)
+      if [ -d /opt/sentinel-os/toolkit ]; then
+        find /opt/sentinel-os/toolkit -name 'sentinel-*' -type f | while read -r src; do
+          name=$(basename "$src")
+          cp "$src" "/usr/local/bin/$name" && chmod +x "/usr/local/bin/$name"
+        done
+        [ -f /opt/sentinel-os/toolkit/gen-sentinel-menu ] && cp /opt/sentinel-os/toolkit/gen-sentinel-menu /usr/local/bin/ && chmod +x /usr/local/bin/gen-sentinel-menu
+        echo "Installed $(ls /usr/local/bin/sentinel-* 2>/dev/null | wc -l) toolkit scripts from local clone"
+      else
+        # Fallback: download individually (won't resolve symlinks but better than nothing)
+        for s in sentinel-ai sentinel-scope sentinel-recon sentinel-loot \
+                 sentinel-harvest sentinel-agent sentinel-greeting \
+                 sentinel-cheat sentinel-watch sentinel-catch sentinel-crack sentinel-pivot sentinel-autonomy \
+                 sentinel-anon sentinel-macspoof sentinel-detonate sentinel-stealth \
+                 sentinel-ask sentinel-triage sentinel-engage sentinel-arsenal \
+                 sentinel-tweaks sentinel-lockout gen-sentinel-menu sentinel-desktop-setup; do
+          curl -fsSL "https://raw.githubusercontent.com/SpartanKing18/sentinel-os/main/toolkit/$s" -o "/usr/local/bin/$s" && chmod +x "/usr/local/bin/$s" || echo "TOOLKIT-SKIP $s"
+        done
+      fi
       # `/lockout` shorthand for the defensive lockdown command
       ln -sf /usr/local/bin/sentinel-lockout /usr/local/bin/lockout
       # menu entry (non-destructive: shows status + how to engage/restore)
