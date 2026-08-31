@@ -142,6 +142,13 @@ write_files:
         apt-get install -y linux-image-amd64 && { apt-get purge -y linux-image-cloud-amd64 2>/dev/null || true; }
       fi
       update-grub 2>/dev/null || true
+      # Clone sentinel-os repo for boot themes, desktop entries, wallpapers, and toolkit
+      [ -d /opt/sentinel-os ] || timeout 300 git clone --depth 1 https://github.com/SpartanKing18/sentinel-os /opt/sentinel-os 2>/dev/null || true
+      # Copy wallpapers from local clone (faster than downloading each one)
+      if [ -d /opt/sentinel-os/toolkit/wallpapers ]; then
+        install -d /usr/share/backgrounds/sentinel
+        cp /opt/sentinel-os/toolkit/wallpapers/*.png /usr/share/backgrounds/sentinel/ 2>/dev/null || true
+      fi
       # ---- Sentinel GRUB theme ----
       mkdir -p /boot/grub/themes/sentinel
       cp /opt/sentinel-os/boot/grub-theme/theme.txt /boot/grub/themes/sentinel/ 2>/dev/null
