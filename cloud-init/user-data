@@ -170,7 +170,7 @@ write_files:
         chisel ligolo-ng pwncat \
         seclists payloadsallthethings fuzzdb \
         ettercap-text-only mitmproxy bettercap yersinia netsniff-ng dnschef sslstrip         commix xsser dirsearch         hashid hash-identifier ophcrack chntpw patator         bully cowpatty         volatility3 bulk-extractor oletools afflib-tools         apktool dex2jar upx-ucl patchelf checksec         sshuttle impacket-scripts metagoofil         searchsploit shellnoob routersploit \
-        dnsenum fierce dnsmap dsniff tcpreplay tcpflow         mdk3 mdk4 hostapd         openvpn wireguard-tools         p7zip-full dos2unix tree fd-find exa         hashdeep ddrescue         zmap unicornscan         eyewitness         sublist3r         set jwt-tool nosqlmap graphqlmap"
+        dnsenum fierce dnsmap dsniff tcpreplay tcpflow         mdk3 mdk4 hostapd         openvpn wireguard-tools         p7zip-full dos2unix tree fd-find exa         hashdeep ddrescue         zmap unicornscan         eyewitness         sublist3r         set jwt-tool nosqlmap graphqlmap ldap-utils samba-common-bin finger"
       # DESKTOP — XFCE + GUI tools, added for slim & full (not netinstall).
       PKGS_DESKTOP="xfce4 xfce4-terminal xfce4-goodies xfce4-whiskermenu-plugin lightdm dbus-x11 \
         wireshark ettercap-graphical keepassxc desktop-file-utils \
