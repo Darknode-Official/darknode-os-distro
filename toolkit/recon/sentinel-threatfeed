@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -uo pipefail
+DIR="$HOME/.sentinel/threatfeed"; mkdir -p "$DIR/feeds"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+
+FEEDS=(
+  "abuse.ch-urlhaus|https://urlhaus.abuse.ch/downloads/csv_recent/"
+  "abuse.ch-feodo|https://feodotracker.abuse.ch/downloads/ipblocklist.csv"
+  "emergingthreats|https://rules.emergingthreats.net/blockrules/compromised-ips.txt"
+  "cinsscore|https://cinsscore.com/list/ci-badguys.txt"
+)
+
+cmd_update(){
+  c "Updating threat feeds..."
+  for entry in "${FEEDS[@]}"; do
+    IFS='|' read -r name url <<< "$entry"
+    printf "  %-25s " "$name"
+    if curl -sfL --max-time 30 "$url" -o "$DIR/feeds/$name.txt" 2>/dev/null; then
+      local lines=$(wc -l < "$DIR/feeds/$name.txt")
+      g "OK ($lines entries)"
+    else
+      r "FAILED"
+    fi
+  done
+  echo "$(date -u)" > "$DIR/last_update"
+  echo ""
+  g "  Feeds updated."
+}
+
+cmd_search(){
+  local query="${1:?usage: sentinel-threatfeed search <ip|domain|hash>}"
+  c "Searching threat feeds for: $query"
+  echo ""
+  local found=0
+  for entry in "${FEEDS[@]}"; do
+    IFS='|' read -r name _ <<< "$entry"
+    local file="$DIR/feeds/$name.txt"
+    [ -f "$file" ] || continue
+    local hits=$(grep -ci "$query" "$file" 2>/dev/null || echo 0)
+    if [ "$hits" -gt 0 ]; then
+      r "  FOUND in $name ($hits matches)"
+      grep -i "$query" "$file" 2>/dev/null | head -3 | sed 's/^/    /'
+      found=$((found+1))
+    fi
+  done
+  [ "$found" -eq 0 ] && g "  Not found in any threat feed."
+  echo ""
+  dim "  Searched $(ls "$DIR/feeds/"*.txt 2>/dev/null | wc -l) feeds"
+}
+
+cmd_stats(){
+  c "Threat Feed Statistics"
+  echo ""
+  local total=0
+  for entry in "${FEEDS[@]}"; do
+    IFS='|' read -r name _ <<< "$entry"
+    local file="$DIR/feeds/$name.txt"
+    if [ -f "$file" ]; then
+      local lines=$(wc -l < "$file")
+      total=$((total+lines))
+      printf "  %-25s %s entries  (%s)\n" "$name" "$lines" "$(du -h "$file" | cut -f1)"
+    else
+      printf "  %-25s not downloaded\n" "$name"
+    fi
+  done
+  echo ""
+  echo "  Total indicators: $total"
+  [ -f "$DIR/last_update" ] && echo "  Last update: $(cat "$DIR/last_update")"
+}
+
+cmd_sources(){ c "Configured Sources"; echo ""; for e in "${FEEDS[@]}"; do IFS='|' read -r n u <<< "$e"; printf "  %-25s %s\n" "$n" "$u"; done; }
+
+usage(){ cat << 'U'
+  sentinel-threatfeed — aggregate and search threat intelligence feeds
+
+  Commands:
+    update          Pull latest feeds
+    search <ioc>    Search all feeds for IP/domain/hash
+    stats           Show feed statistics
+    sources         List configured sources
+U
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  update) cmd_update ;; search) cmd_search "$@" ;; stats) cmd_stats ;;
+  sources) cmd_sources ;; help|--help|-h) usage ;;
+  *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac

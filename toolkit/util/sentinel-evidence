@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -uo pipefail
+DIR="$HOME/.sentinel/evidence"; mkdir -p "$DIR/files" "$DIR/chain"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+ts(){ date -u +%Y%m%d-%H%M%S; }
+
+cmd_collect(){
+  local file="${1:?usage: sentinel-evidence collect <file> 'description'}"
+  local desc="${2:-no description}"
+  [ -f "$file" ] || { r "File not found: $file"; return 1; }
+  local stamp=$(ts)
+  local hash=$(sha256sum "$file" | cut -d' ' -f1)
+  local name=$(basename "$file")
+  local eid="${stamp}_${name}"
+  cp "$file" "$DIR/files/$eid"
+  {
+    echo "evidence_id=$eid"
+    echo "original_path=$file"
+    echo "original_name=$name"
+    echo "sha256=$hash"
+    echo "collected_at=$stamp"
+    echo "collected_by=$(whoami)@$(hostname)"
+    echo "description=$desc"
+    echo "file_size=$(wc -c < "$file")"
+    echo "file_type=$(file -b "$file")"
+  } > "$DIR/chain/$eid.meta"
+  echo "$(ts) COLLECTED by $(whoami) — $desc" >> "$DIR/chain/$eid.log"
+  g "  Evidence collected: $eid"
+  echo "  SHA256: $hash"
+  echo "  Type:   $(file -b "$file")"
+}
+
+cmd_list(){
+  c "Evidence Locker"
+  echo ""
+  if [ "$(ls "$DIR/chain/"*.meta 2>/dev/null | wc -l)" -gt 0 ]; then
+    printf "  %-30s %-16s %-10s %s\n" "ID" "COLLECTED" "SIZE" "DESCRIPTION"
+    for meta in "$DIR/chain/"*.meta; do
+      local eid=$(grep "^evidence_id=" "$meta" | cut -d= -f2)
+      local when=$(grep "^collected_at=" "$meta" | cut -d= -f2)
+      local size=$(grep "^file_size=" "$meta" | cut -d= -f2)
+      local desc=$(grep "^description=" "$meta" | cut -d= -f2-)
+      printf "  %-30s %-16s %-10s %s\n" "${eid:0:28}" "$when" "${size}B" "${desc:0:40}"
+    done
+  else
+    dim "  No evidence collected."
+  fi
+}
+
+cmd_verify(){
+  c "Verifying evidence integrity..."
+  local ok=0 fail=0
+  for meta in "$DIR/chain/"*.meta; do
+    [ -f "$meta" ] || continue
+    local eid=$(grep "^evidence_id=" "$meta" | cut -d= -f2)
+    local expected=$(grep "^sha256=" "$meta" | cut -d= -f2)
+    local file="$DIR/files/$eid"
+    if [ -f "$file" ]; then
+      local actual=$(sha256sum "$file" | cut -d' ' -f1)
+      if [ "$actual" = "$expected" ]; then
+        g "  $eid: INTACT"
+        ok=$((ok+1))
+      else
+        r "  $eid: TAMPERED! Hash mismatch"
+        fail=$((fail+1))
+      fi
+    else
+      r "  $eid: MISSING!"
+      fail=$((fail+1))
+    fi
+  done
+  echo ""
+  [ "$fail" -eq 0 ] && g "  All $ok pieces of evidence verified." || r "  $fail/$((ok+fail)) evidence items compromised!"
+}
+
+cmd_chain(){
+  local eid="${1:?usage: sentinel-evidence chain <evidence-id>}"
+  local logfile="$DIR/chain/$eid.log"
+  [ -f "$logfile" ] || { r "Evidence not found: $eid"; return 1; }
+  c "Chain of Custody: $eid"
+  echo ""
+  cat "$logfile" | sed 's/^/  /'
+}
+
+cmd_search(){
+  local query="${1:?usage: sentinel-evidence search <keyword>}"
+  c "Searching evidence for: $query"
+  grep -il "$query" "$DIR/chain/"*.meta 2>/dev/null | while read -r meta; do
+    local eid=$(grep "^evidence_id=" "$meta" | cut -d= -f2)
+    local desc=$(grep "^description=" "$meta" | cut -d= -f2-)
+    echo "  $eid: $desc"
+  done
+}
+
+cmd_export(){
+  local case_name="${1:-evidence-export}"
+  local out="$DIR/${case_name}-$(ts).tar.gz"
+  tar czf "$out" -C "$DIR" files/ chain/ 2>/dev/null
+  g "  Evidence package exported: $out"
+  echo "  SHA256: $(sha256sum "$out" | cut -d' ' -f1)"
+}
+
+usage(){ cat << 'U'
+  sentinel-evidence — secure evidence storage with chain of custody
+
+  Commands:
+    collect <file> <desc>   Collect evidence (hash + copy + log)
+    list                    List all evidence
+    verify                  Verify integrity of all evidence
+    chain <evidence-id>     Show chain of custody
+    search <keyword>        Search evidence descriptions
+    export [case-name]      Export evidence package (tar.gz)
+U
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  collect) cmd_collect "$@" ;; list) cmd_list ;; verify) cmd_verify ;;
+  chain) cmd_chain "$@" ;; search) cmd_search "$@" ;; export) cmd_export "$@" ;;
+  help|--help|-h) usage ;; *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac
