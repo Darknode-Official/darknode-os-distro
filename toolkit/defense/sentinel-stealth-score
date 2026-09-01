@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# sentinel-stealth-score — Stealth Scorer
+# Rates how detectable your current attack posture is (0-100).
+# Original concept — no existing tool does this.
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+bold(){ printf '\e[1m%s\e[0m\n' "$*"; }
+
+# Noisy tools/processes that get flagged by IDS/EDR
+NOISY_TOOLS=("nmap" "masscan" "nikto" "sqlmap" "hydra" "gobuster" "ffuf" "dirb"
+  "wfuzz" "nuclei" "metasploit" "msfconsole" "msfvenom" "ettercap" "arpspoof"
+  "responder" "aircrack" "airodump" "aireplay" "wifite" "kismet" "bettercap"
+  "yersinia" "hping3" "enum4linux" "crackmapexec" "bloodhound" "mimikatz"
+  "hashcat" "john" "ophcrack" "medusa" "ncrack" "patator" "feroxbuster")
+
+# Stealthy alternatives
+QUIET_ALT=(
+  "nmap -sS -T2:nmap -sS -T4 (use slower timing)"
+  "proxychains nmap:nmap (route through proxy)"
+  "curl:wget (less fingerprinted)"
+  "nc -z:nmap (netcat is quieter for single ports)"
+  "dig:nslookup (dig is more controlled)"
+)
+
+cmd_check(){
+  c "Stealth Score Analysis"
+  echo ""
+  local score=100 deductions=()
+
+  # Check 1: Noisy processes running
+  bold "1. Running processes"
+  local noisy_running=0
+  for tool in "${NOISY_TOOLS[@]}"; do
+    if pgrep -x "$tool" >/dev/null 2>&1; then
+      deductions+=("  -10  $tool is running (easily detected by EDR)")
+      score=$((score-10))
+      noisy_running=$((noisy_running+1))
+    fi
+  done
+  [ $noisy_running -eq 0 ] && g "  No noisy tools running" || y "  $noisy_running noisy tools running"
+
+  # Check 2: Network connections
+  bold "2. Network connections"
+  local open_conns=$(ss -tn state established 2>/dev/null | wc -l)
+  local suspicious_ports=$(ss -tn state established 2>/dev/null | awk '{print $4}' | grep -cE ':4444|:5555|:8888|:1337|:31337|:9001|:9002' || true)
+  echo "  Active connections: $open_conns"
+  if [ "$suspicious_ports" -gt 0 ]; then
+    deductions+=("  -15  Connections on suspicious ports (4444/5555/1337/etc)")
+    score=$((score-15))
+    y "  Suspicious port connections: $suspicious_ports"
+  else
+    g "  No suspicious port connections"
+  fi
+
+  # Check 3: Tor/proxy usage
+  bold "3. Anonymization"
+  if pgrep -x tor >/dev/null 2>&1; then
+    g "  Tor: running (+5 stealth)"
+    score=$((score+5 > 100 ? 100 : score+5))
+  else
+    deductions+=("  -5   Tor not running (direct connections are traceable)")
+    score=$((score-5))
+    y "  Tor: not running"
+  fi
+  if [ -n "${http_proxy:-}" ] || [ -n "${ALL_PROXY:-}" ]; then
+    g "  Proxy: configured"
+  else
+    deductions+=("  -3   No proxy configured")
+    score=$((score-3))
+  fi
+
+  # Check 4: MAC address
+  bold "4. MAC address"
+  local real_mac=$(ip link show 2>/dev/null | grep ether | head -1 | awk '{print $2}')
+  if [ -n "$real_mac" ]; then
+    # Check if MAC is randomized (locally administered bit set)
+    local first_byte=$(echo "$real_mac" | cut -d: -f1)
+    local la_bit=$(( 0x$first_byte & 0x02 ))
+    if [ "$la_bit" -ne 0 ]; then
+      g "  MAC appears randomized/spoofed"
+    else
+      deductions+=("  -5   MAC address appears real (not spoofed)")
+      score=$((score-5))
+      y "  MAC: $real_mac (original — use macchanger)"
+    fi
+  fi
+
+  # Check 5: DNS leaks
+  bold "5. DNS configuration"
+  local dns=$(grep nameserver /etc/resolv.conf 2>/dev/null | head -1 | awk '{print $2}')
+  if [ "$dns" = "127.0.0.1" ] || [ "$dns" = "127.0.0.53" ]; then
+    g "  DNS: local resolver"
+  elif echo "$dns" | grep -qE '^(8\.8|1\.1|208\.67|9\.9)'; then
+    deductions+=("  -3   Using public DNS ($dns) — queries visible to provider")
+    score=$((score-3))
+    y "  DNS: $dns (public — consider DNS-over-Tor)"
+  else
+    echo "  DNS: $dns"
+  fi
+
+  # Check 6: History
+  bold "6. Command history"
+  local hist_size=$(wc -l < "${HISTFILE:-$HOME/.bash_history}" 2>/dev/null || echo 0)
+  if [ "$hist_size" -gt 100 ]; then
+    deductions+=("  -5   Large bash history ($hist_size lines) — forensic evidence")
+    score=$((score-5))
+    y "  History: $hist_size lines (clear with: history -c && > ~/.bash_history)"
+  else
+    g "  History: $hist_size lines (minimal)"
+  fi
+
+  # Check 7: Logging
+  bold "7. System logging"
+  if systemctl is-active rsyslog >/dev/null 2>&1 || systemctl is-active syslog >/dev/null 2>&1; then
+    deductions+=("  -3   Syslog running (actions are being logged)")
+    score=$((score-3))
+    y "  Syslog: active (your actions are logged)"
+  else
+    g "  Syslog: not running"
+  fi
+
+  # Check 8: Hostname
+  bold "8. Hostname"
+  local hn=$(hostname)
+  if echo "$hn" | grep -qiE 'kali|parrot|sentinel|hack|pentest|attack'; then
+    deductions+=("  -5   Hostname '$hn' reveals purpose")
+    score=$((score-5))
+    y "  Hostname: '$hn' (change with: hostnamectl set-hostname generic)"
+  else
+    g "  Hostname: '$hn' (neutral)"
+  fi
+
+  # Clamp
+  [ $score -lt 0 ] && score=0
+  [ $score -gt 100 ] && score=100
+
+  # Display score
+  echo ""
+  echo "  ============================================"
+  local color="\e[32m"
+  [ $score -lt 70 ] && color="\e[33m"
+  [ $score -lt 40 ] && color="\e[31m"
+  printf "  STEALTH SCORE: ${color}%d/100\e[0m\n" "$score"
+  echo "  ============================================"
+
+  if [ $score -ge 80 ]; then
+    g "  Rating: GHOST — very hard to detect"
+  elif [ $score -ge 60 ]; then
+    y "  Rating: SHADOW — some traces visible"
+  elif [ $score -ge 40 ]; then
+    y "  Rating: VISIBLE — IDS/SOC will likely notice"
+  else
+    r "  Rating: LOUD — you are definitely being watched"
+  fi
+
+  if [ ${#deductions[@]} -gt 0 ]; then
+    echo ""
+    bold "Deductions:"
+    printf '%s\n' "${deductions[@]}"
+  fi
+}
+
+cmd_rate(){
+  local command="${1:?usage: sentinel-stealth-score rate <command>}"
+  c "Noise rating: $command"
+  echo ""
+
+  local noise=0 reasons=()
+  local tool=$(echo "$command" | awk '{print $1}')
+
+  for noisy in "${NOISY_TOOLS[@]}"; do
+    if [ "$tool" = "$noisy" ]; then
+      noise=$((noise+40))
+      reasons+=("Tool '$tool' has known IDS signatures")
+      break
+    fi
+  done
+
+  # Check for aggressive flags
+  echo "$command" | grep -qE '\-T[45]' && { noise=$((noise+20)); reasons+=("Aggressive timing (-T4/-T5)"); }
+  echo "$command" | grep -qE '\-sS|\-sT|\-sU' && { noise=$((noise+10)); reasons+=("Active scanning"); }
+  echo "$command" | grep -qE '\-\-rate.*[0-9]{4,}' && { noise=$((noise+30)); reasons+=("High packet rate"); }
+  echo "$command" | grep -qiE 'brute|spray|hydra|medusa' && { noise=$((noise+25)); reasons+=("Brute force activity"); }
+  echo "$command" | grep -qi 'proxychains' && { noise=$((noise-15)); reasons+=("Using proxy chain (-15)"); }
+
+  [ $noise -lt 0 ] && noise=0
+  [ $noise -gt 100 ] && noise=100
+
+  local color="\e[32m"
+  [ $noise -gt 30 ] && color="\e[33m"
+  [ $noise -gt 60 ] && color="\e[31m"
+
+  printf "  Noise level: ${color}%d/100\e[0m\n" "$noise"
+  echo ""
+  for reason in "${reasons[@]}"; do
+    echo "  - $reason"
+  done
+
+  if [ $noise -gt 50 ]; then
+    echo ""
+    bold "Quieter alternatives:"
+    for alt in "${QUIET_ALT[@]}"; do
+      local quiet=${alt%%:*}
+      local loud=${alt##*:}
+      if echo "$command" | grep -qi "$(echo "$loud" | awk '{print $1}')"; then
+        g "  Try: $quiet"
+      fi
+    done
+  fi
+}
+
+cmd_suggest(){
+  c "Stealth Suggestions"
+  echo ""
+  bold "Before attacking:"
+  echo "  1. Start Tor:           sudo systemctl start tor"
+  echo "  2. Spoof MAC:           sudo macchanger -r eth0"
+  echo "  3. Set proxy:           export ALL_PROXY=socks5://127.0.0.1:9050"
+  echo "  4. Change hostname:     sudo hostnamectl set-hostname workstation"
+  echo "  5. Clear history:       history -c && > ~/.bash_history"
+  echo "  6. Use DNS-over-Tor:    echo 'nameserver 127.0.0.1' > /etc/resolv.conf"
+  echo ""
+  bold "During attack:"
+  echo "  7. Slow scans:          nmap -T2 (not -T4)"
+  echo "  8. Limit threads:       --threads 2 (not 50)"
+  echo "  9. Use proxychains:     proxychains <tool>"
+  echo "  10. Fragment packets:   nmap -f"
+  echo ""
+  bold "After attack:"
+  echo "  11. Clear logs:         (only on YOUR machine)"
+  echo "  12. Kill connections:   ss -K dst TARGET_IP"
+  echo "  13. Restore MAC:        sudo macchanger -p eth0"
+  echo "  14. Stop Tor:           sudo systemctl stop tor"
+}
+
+cmd_history(){
+  c "Command History Noise Analysis"
+  echo ""
+  local hist="${HISTFILE:-$HOME/.bash_history}"
+  [ -f "$hist" ] || { r "No history file found."; return 1; }
+
+  bold "Noisy commands in history:"
+  local found=0
+  for tool in "${NOISY_TOOLS[@]}"; do
+    local count=$(grep -c "^$tool\b\|[|; ]$tool\b" "$hist" 2>/dev/null || true)
+    if [ "$count" -gt 0 ]; then
+      printf "  %-20s %d occurrences\n" "$tool" "$count"
+      found=$((found+count))
+    fi
+  done
+  [ $found -eq 0 ] && g "  No noisy tool commands in history"
+  echo ""
+  echo "  Total noisy commands: $found"
+  dim "Clear: history -c && > $hist"
+}
+
+usage(){
+  cat << 'USAGE'
+
+  sentinel-stealth-score — Stealth Scorer
+
+  Commands:
+    check              Score your current stealth posture (0-100)
+    rate <command>     Rate how noisy a specific command is
+    suggest            Show stealth improvement suggestions
+    history            Analyze command history for noisy tools
+
+USAGE
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  check)   cmd_check ;;
+  rate)    cmd_rate "$*" ;;
+  suggest) cmd_suggest ;;
+  history) cmd_history ;;
+  help|--help|-h) usage ;;
+  *)       r "Unknown: $cmd"; usage; exit 1 ;;
+esac
