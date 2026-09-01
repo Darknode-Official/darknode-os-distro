@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# sentinel-baseline — network traffic baseline and anomaly detection.
+
+BL_DIR="$HOME/.sentinel/baseline"
+mkdir -p "$BL_DIR"
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+
+cmd_learn(){
+  local duration="${1:-60}"
+  c "Learning Network Baseline (${duration} seconds)"
+  echo ""
+
+  local stamp; stamp=$(date +%Y%m%d-%H%M%S)
+  local bl_file="$BL_DIR/baseline_${stamp}.json"
+
+  dim "Capturing normal traffic patterns..."
+  # Capture connection stats
+  local connections_file="$BL_DIR/conns_${stamp}.txt"
+  local dns_file="$BL_DIR/dns_${stamp}.txt"
+  local ports_file="$BL_DIR/ports_${stamp}.txt"
+
+  # Sample connections every 5 seconds
+  local samples=$((duration / 5))
+  for i in $(seq 1 "$samples"); do
+    ss -tnp 2>/dev/null | grep ESTAB | awk '{print $5}' | sort >> "$connections_file"
+    ss -tlnp 2>/dev/null | grep LISTEN | awk '{print $4}' >> "$ports_file"
+    # DNS queries (if tcpdump available)
+    timeout 5 tcpdump -i any -nn port 53 -c 20 2>/dev/null | awk '{print $NF}' >> "$dns_file" &
+    sleep 5
+    printf "\r  Sampling... %d/%d" "$i" "$samples"
+  done
+  echo ""
+
+  # Analyze and save baseline
+  python3 -c "
+import json
+from collections import Counter
+
+conns = [l.strip() for l in open('$connections_file') if l.strip()]
+ports = [l.strip() for l in open('$ports_file') if l.strip()]
+dns = []
+try: dns = [l.strip() for l in open('$dns_file') if l.strip()]
+except: pass
+
+baseline = {
+    'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+    'duration_sec': $duration,
+    'normal_destinations': dict(Counter(conns).most_common(50)),
+    'listening_ports': list(set(ports)),
+    'dns_queries': dict(Counter(dns).most_common(30)),
+    'total_connections': len(conns),
+    'unique_destinations': len(set(conns)),
+}
+with open('$bl_file', 'w') as f:
+    json.dump(baseline, f, indent=2)
+print(f'  Connections sampled: {len(conns)}')
+print(f'  Unique destinations: {len(set(conns))}')
+print(f'  Listening ports: {len(set(ports))}')
+print(f'  DNS queries: {len(dns)}')
+" 2>/dev/null
+
+  # Cleanup temp files
+  rm -f "$connections_file" "$dns_file" "$ports_file"
+
+  g "Baseline saved: $bl_file"
+  dim "Next: sentinel-baseline monitor"
+}
+
+cmd_monitor(){
+  c "Network Anomaly Monitor (Ctrl+C to stop)"
+  echo ""
+
+  # Find latest baseline
+  local bl; bl=$(ls -t "$BL_DIR"/baseline_*.json 2>/dev/null | head -1)
+  [ -z "$bl" ] && { r "No baseline found. Run: sentinel-baseline learn"; return 1; }
+  dim "Using baseline: $(basename "$bl")"
+  echo ""
+
+  local known_dests; known_dests=$(python3 -c "import json;d=json.load(open('$bl'));print(' '.join(d.get('normal_destinations',{}).keys()))" 2>/dev/null)
+  local known_ports; known_ports=$(python3 -c "import json;d=json.load(open('$bl'));print(' '.join(d.get('listening_ports',[])))" 2>/dev/null)
+
+  while true; do
+    local alerts=0
+    # Check for new destinations
+    ss -tnp 2>/dev/null | grep ESTAB | awk '{print $5}' | sort -u | while read -r dest; do
+      if ! echo "$known_dests" | grep -qF "$dest"; then
+        r "  [ANOMALY] New destination: $dest"
+        alerts=$((alerts+1))
+      fi
+    done
+
+    # Check for new listening ports
+    ss -tlnp 2>/dev/null | grep LISTEN | awk '{print $4}' | sort -u | while read -r port; do
+      if ! echo "$known_ports" | grep -qF "$port"; then
+        r "  [ANOMALY] New listening port: $port"
+      fi
+    done
+
+    # Check connection count
+    local current_conns; current_conns=$(ss -tnp 2>/dev/null | grep -c ESTAB)
+    local baseline_avg; baseline_avg=$(python3 -c "import json;d=json.load(open('$bl'));print(d.get('total_connections',0)//max(1,d.get('duration_sec',60)//5))" 2>/dev/null || echo 10)
+    if [ "$current_conns" -gt $((baseline_avg * 3)) ] 2>/dev/null; then
+      y "  [ALERT] Connection count spike: $current_conns (baseline avg: $baseline_avg)"
+    fi
+
+    printf "\r  Monitoring... connections: %d  $(date +%H:%M:%S)  " "$current_conns"
+    sleep 10
+  done
+}
+
+cmd_compare(){
+  c "Baseline vs Current"
+  local bl; bl=$(ls -t "$BL_DIR"/baseline_*.json 2>/dev/null | head -1)
+  [ -z "$bl" ] && { r "No baseline found."; return 1; }
+  echo ""
+  dim "Baseline: $(basename "$bl")"
+  echo ""
+
+  dim "New destinations not in baseline:"
+  local known; known=$(python3 -c "import json;print(' '.join(json.load(open('$bl')).get('normal_destinations',{}).keys()))" 2>/dev/null)
+  ss -tnp 2>/dev/null | grep ESTAB | awk '{print $5}' | sort -u | while read -r dest; do
+    echo "$known" | grep -qF "$dest" || y "  $dest"
+  done
+
+  echo ""
+  dim "New listening ports:"
+  local known_ports; known_ports=$(python3 -c "import json;print(' '.join(json.load(open('$bl')).get('listening_ports',[])))" 2>/dev/null)
+  ss -tlnp 2>/dev/null | grep LISTEN | awk '{print $4}' | sort -u | while read -r port; do
+    echo "$known_ports" | grep -qF "$port" || y "  $port"
+  done
+}
+
+cmd_report(){
+  c "Baseline Reports"
+  for bl in "$BL_DIR"/baseline_*.json; do
+    [ -f "$bl" ] || continue
+    python3 -c "
+import json
+d=json.load(open('$bl'))
+print(f\"  {d['timestamp']}  {d['duration_sec']}s  conns:{d['total_connections']}  dests:{d['unique_destinations']}  ports:{len(d['listening_ports'])}\")
+" 2>/dev/null
+  done
+}
+
+cmd_reset(){
+  r "Clearing all baselines..."
+  rm -f "$BL_DIR"/baseline_*.json
+  g "Baselines cleared."
+}
+
+usage(){ cat << 'U'
+
+  sentinel-baseline — network traffic baseline and anomaly detection
+
+  Commands:
+    learn [seconds]     Capture normal traffic baseline (default 60s)
+    monitor             Live monitor for anomalies vs baseline
+    compare             Compare current state to baseline
+    report              Show all baselines
+    reset               Clear all baselines
+
+U
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  learn) cmd_learn "$@" ;; monitor) cmd_monitor ;; compare) cmd_compare ;;
+  report) cmd_report ;; reset) cmd_reset ;; help|--help|-h) usage ;;
+  *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac
