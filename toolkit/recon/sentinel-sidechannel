@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# sentinel-sidechannel — extract info through indirect channels.
+# Timing analysis, error messages, headers, cache behavior.
+
+DIR="$HOME/.sentinel/sidechannel"
+mkdir -p "$DIR"
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+
+cmd_timing(){
+  local url="${1:?usage: sentinel-sidechannel timing <url>}"
+  c "Timing Analysis: $url"
+  dim "Testing response times to detect username enumeration..."
+  echo ""
+
+  local valid_users=()
+  local test_users=("admin" "administrator" "root" "user" "test" "guest" "info" "support" "help" "sales" "contact" "webmaster" "postmaster")
+
+  printf "  %-20s %s\n" "USERNAME" "RESPONSE TIME"
+  printf "  %-20s %s\n" "---" "---"
+
+  for user in "${test_users[@]}"; do
+    local start=$(date +%s%N)
+    curl -s -o /dev/null -w "%{http_code}" -X POST "$url" \
+      -d "username=$user&password=invalid_test_$(openssl rand -hex 4 2>/dev/null)" \
+      --max-time 10 2>/dev/null
+    local end=$(date +%s%N)
+    local ms=$(( (end - start) / 1000000 ))
+    printf "  %-20s %sms\n" "$user" "$ms"
+    [ "$ms" -gt 500 ] && valid_users+=("$user")
+  done
+
+  echo ""
+  if [ ${#valid_users[@]} -gt 0 ]; then
+    y "  Potential valid users (slower response = likely exists):"
+    for u in "${valid_users[@]}"; do echo "    $u"; done
+  else
+    dim "  No timing differences detected."
+  fi
+}
+
+cmd_errors(){
+  local url="${1:?usage: sentinel-sidechannel errors <url>}"
+  c "Error Message Analysis: $url"
+  echo ""
+
+  local payloads=("'" "\"" "<script>" "../../../etc/passwd" "{{7*7}}" "\${7*7}" "%00" "%0a" "NULL" "-1" "99999999" "admin' OR '1'='1" "AAAA%n%n%n" "() { :;};")
+
+  for payload in "${payloads[@]}"; do
+    local response=$(curl -s -k "$url?test=$(python3 -c "import urllib.parse;print(urllib.parse.quote('$payload'))" 2>/dev/null)" --max-time 5 2>/dev/null)
+    local errors=$(echo "$response" | grep -ioE "error|exception|warning|fatal|stack trace|sql|syntax|undefined|null pointer|debug|traceback" | head -3)
+    if [ -n "$errors" ]; then
+      y "  Payload: $payload"
+      echo "    Errors: $errors"
+    fi
+  done
+
+  echo ""
+  dim "Error messages can reveal: database type, framework, file paths, stack traces."
+}
+
+cmd_headers(){
+  local url="${1:?usage: sentinel-sidechannel headers <url>}"
+  c "Header Information Leak Check: $url"
+  echo ""
+
+  local headers=$(curl -sI -k "$url" --max-time 10 2>/dev/null)
+
+  echo "  Interesting headers:"
+  echo "$headers" | grep -iE "^(server|x-powered-by|x-aspnet|x-debug|x-runtime|x-request-id|x-frame|x-xss|content-security|strict-transport|via|x-cache|x-cdn|x-generator|x-forwarded|set-cookie)" | sed 's/^/    /'
+
+  echo ""
+  echo "  Missing security headers:"
+  echo "$headers" | grep -qi "strict-transport-security" || y "    Missing: Strict-Transport-Security (HSTS)"
+  echo "$headers" | grep -qi "content-security-policy" || y "    Missing: Content-Security-Policy (CSP)"
+  echo "$headers" | grep -qi "x-frame-options" || y "    Missing: X-Frame-Options"
+  echo "$headers" | grep -qi "x-content-type-options" || y "    Missing: X-Content-Type-Options"
+  echo "$headers" | grep -qi "x-xss-protection" || y "    Missing: X-XSS-Protection"
+
+  echo ""
+  echo "  Cookie security:"
+  echo "$headers" | grep -i "set-cookie" | while read -r line; do
+    echo "$line" | grep -qi "httponly" || y "    Cookie missing HttpOnly flag"
+    echo "$line" | grep -qi "secure" || y "    Cookie missing Secure flag"
+    echo "$line" | grep -qi "samesite" || y "    Cookie missing SameSite attribute"
+  done
+}
+
+cmd_cache(){
+  local url="${1:?usage: sentinel-sidechannel cache <url>}"
+  c "Cache-Based Information Disclosure: $url"
+  echo ""
+
+  echo "  Testing cache behavior..."
+  local r1=$(curl -sI -k "$url" --max-time 5 2>/dev/null)
+  local r2=$(curl -sI -k "$url" --max-time 5 2>/dev/null)
+
+  local cache1=$(echo "$r1" | grep -i "x-cache\|cf-cache\|age:" | head -3)
+  local cache2=$(echo "$r2" | grep -i "x-cache\|cf-cache\|age:" | head -3)
+
+  echo "  Request 1 cache headers:"
+  [ -n "$cache1" ] && echo "$cache1" | sed 's/^/    /' || dim "    (none)"
+  echo "  Request 2 cache headers:"
+  [ -n "$cache2" ] && echo "$cache2" | sed 's/^/    /' || dim "    (none)"
+
+  echo ""
+  echo "  Testing cache poisoning vectors..."
+  for header in "X-Forwarded-Host: evil.com" "X-Original-URL: /admin" "X-Forwarded-Scheme: http"; do
+    local resp=$(curl -sI -k -H "$header" "$url" --max-time 5 2>/dev/null | head -1)
+    echo "    $header -> $resp"
+  done
+}
+
+cmd_report(){
+  c "Side Channel Findings"
+  dim "Run individual checks for detailed results."
+  echo ""
+  echo "  Commands:"
+  echo "    sentinel-sidechannel timing <url>   Username enumeration via timing"
+  echo "    sentinel-sidechannel errors <url>    Error message analysis"
+  echo "    sentinel-sidechannel headers <url>   Header information leaks"
+  echo "    sentinel-sidechannel cache <url>     Cache behavior analysis"
+}
+
+usage(){
+  cat << 'USAGE'
+
+  sentinel-sidechannel — side channel information gatherer
+
+  Commands:
+    timing <url>       Username enumeration via response timing
+    errors <url>       Error message analysis (injection probes)
+    headers <url>      HTTP header information leak check
+    cache <url>        Cache-based information disclosure
+    report             Show findings summary
+
+USAGE
+}
+
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  timing)   cmd_timing "$@" ;;
+  errors)   cmd_errors "$@" ;;
+  headers)  cmd_headers "$@" ;;
+  cache)    cmd_cache "$@" ;;
+  report)   cmd_report ;;
+  help|--help|-h) usage ;;
+  *)        r "Unknown: $cmd"; usage; exit 1 ;;
+esac

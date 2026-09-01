@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# sentinel-opsec — operational security checker.
+# Comprehensive OPSEC audit: data leaks, attribution risks, cleanup.
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+
+SCORE=100
+ISSUES=()
+
+_deduct(){
+  local points="$1" reason="$2"
+  SCORE=$((SCORE - points))
+  ISSUES+=("[-$points] $reason")
+}
+
+cmd_check(){
+  c "OPSEC Audit — Full Check"
+  echo ""
+  SCORE=100
+  ISSUES=()
+
+  # 1. Real identity in git
+  c "1. Git Identity"
+  local git_name=$(git config --global user.name 2>/dev/null)
+  local git_email=$(git config --global user.email 2>/dev/null)
+  if [ -n "$git_name" ]; then
+    y "  Name: $git_name"
+    _deduct 10 "Real name in git config: $git_name"
+  else
+    g "  Name: not set (good)"
+  fi
+  if echo "$git_email" | grep -qiE "gmail|yahoo|hotmail|outlook|proton"; then
+    y "  Email: $git_email (personal email in git)"
+    _deduct 10 "Personal email in git: $git_email"
+  elif [ -n "$git_email" ]; then
+    echo "  Email: $git_email"
+  else
+    g "  Email: not set"
+  fi
+
+  # 2. Hostname
+  echo ""
+  c "2. Hostname"
+  local hn=$(hostname)
+  if echo "$hn" | grep -qiE "macbook|desktop|laptop|home|$(whoami)"; then
+    y "  Hostname: $hn (may reveal identity)"
+    _deduct 5 "Identifiable hostname: $hn"
+  else
+    g "  Hostname: $hn (neutral)"
+  fi
+
+  # 3. MAC address
+  echo ""
+  c "3. MAC Address"
+  local mac=$(ip link 2>/dev/null | grep ether | head -1 | awk '{print $2}')
+  local orig_mac=$(ethtool -P eth0 2>/dev/null | awk '{print $3}' || echo "")
+  if [ -n "$mac" ]; then
+    if [ "$mac" != "$orig_mac" ] && [ -n "$orig_mac" ]; then
+      g "  MAC: $mac (spoofed - good)"
+    else
+      y "  MAC: $mac (original — consider spoofing)"
+      _deduct 5 "Original MAC address exposed"
+    fi
+  fi
+
+  # 4. DNS leaks
+  echo ""
+  c "4. DNS Configuration"
+  local dns=$(grep nameserver /etc/resolv.conf 2>/dev/null | head -1 | awk '{print $2}')
+  if echo "$dns" | grep -qE "^192\.|^10\.|^172\.(1[6-9]|2|3[01])\."; then
+    y "  DNS: $dns (using local/ISP DNS - leaks queries)"
+    _deduct 10 "Using ISP DNS: $dns"
+  elif echo "$dns" | grep -q "127.0.0.1"; then
+    g "  DNS: localhost (likely Tor/local resolver)"
+  else
+    echo "  DNS: $dns"
+  fi
+
+  # 5. Tor/VPN
+  echo ""
+  c "5. Anonymity Layer"
+  if pgrep -x tor >/dev/null 2>&1; then
+    g "  Tor: running"
+  else
+    y "  Tor: not running"
+    _deduct 15 "No Tor connection active"
+  fi
+  if ip link show | grep -qE "tun|wg|vpn"; then
+    g "  VPN: active"
+  else
+    y "  VPN: not detected"
+    _deduct 10 "No VPN active"
+  fi
+
+  # 6. Bash history
+  echo ""
+  c "6. Command History"
+  local hist_size=$(wc -l < ~/.bash_history 2>/dev/null || echo 0)
+  if [ "$hist_size" -gt 100 ]; then
+    y "  History: $hist_size lines (contains your activity)"
+    _deduct 5 "Large bash history: $hist_size lines"
+  else
+    g "  History: $hist_size lines"
+  fi
+  if grep -qiE "ssh.*@|curl.*-u|pass|token|key" ~/.bash_history 2>/dev/null; then
+    r "  WARNING: History contains credentials/tokens!"
+    _deduct 15 "Credentials found in bash history"
+  fi
+
+  # 7. Files with metadata
+  echo ""
+  c "7. File Metadata"
+  local exif_files=$(find . -maxdepth 2 -name "*.jpg" -o -name "*.png" -o -name "*.pdf" -o -name "*.docx" 2>/dev/null | head -5 | wc -l)
+  if [ "$exif_files" -gt 0 ]; then
+    y "  Found $exif_files files that may contain EXIF/metadata"
+    _deduct 5 "Files with potential metadata leaks"
+  else
+    g "  No metadata-rich files in current directory"
+  fi
+
+  # 8. SSH keys
+  echo ""
+  c "8. SSH Configuration"
+  if [ -f ~/.ssh/known_hosts ] && [ "$(wc -l < ~/.ssh/known_hosts 2>/dev/null)" -gt 0 ]; then
+    y "  known_hosts: $(wc -l < ~/.ssh/known_hosts) entries (reveals targets)"
+    _deduct 5 "SSH known_hosts reveals targets"
+  fi
+  if ls ~/.ssh/id_* >/dev/null 2>&1; then
+    echo "  SSH keys: $(ls ~/.ssh/id_* 2>/dev/null | wc -l) key pairs"
+  fi
+
+  # 9. System timezone
+  echo ""
+  c "9. Timezone"
+  local tz=$(timedatectl 2>/dev/null | grep "Time zone" | awk '{print $3}')
+  if [ -n "$tz" ] && [ "$tz" != "UTC" ]; then
+    y "  Timezone: $tz (reveals approximate location)"
+    _deduct 5 "Non-UTC timezone: $tz"
+  else
+    g "  Timezone: UTC (good)"
+  fi
+
+  # 10. Browser
+  echo ""
+  c "10. Browser Fingerprint"
+  if [ -d ~/.mozilla ] || [ -d ~/.config/google-chrome ]; then
+    y "  Browser profiles found (contains browsing history)"
+    _deduct 5 "Browser profiles with history present"
+  else
+    g "  No browser profiles found"
+  fi
+
+  # Score
+  echo ""
+  hr(){ printf '\e[2m%s\e[0m\n' "$(printf '═%.0s' $(seq 1 60))"; }
+  hr
+  echo ""
+  if [ "$SCORE" -ge 80 ]; then
+    g "  OPSEC SCORE: $SCORE/100 (GOOD)"
+  elif [ "$SCORE" -ge 50 ]; then
+    y "  OPSEC SCORE: $SCORE/100 (NEEDS IMPROVEMENT)"
+  else
+    r "  OPSEC SCORE: $SCORE/100 (POOR)"
+  fi
+
+  echo ""
+  if [ ${#ISSUES[@]} -gt 0 ]; then
+    echo "  Issues found:"
+    for issue in "${ISSUES[@]}"; do
+      echo "    $issue"
+    done
+  fi
+  echo ""
+  dim "  Fix: sentinel-opsec cleanup"
+}
+
+cmd_cleanup(){
+  c "OPSEC Cleanup"
+  echo ""
+
+  echo "  Clearing bash history..."
+  cat /dev/null > ~/.bash_history 2>/dev/null
+  history -c 2>/dev/null
+  g "  History cleared."
+
+  echo "  Clearing SSH known_hosts..."
+  cat /dev/null > ~/.ssh/known_hosts 2>/dev/null
+  g "  known_hosts cleared."
+
+  echo "  Setting timezone to UTC..."
+  sudo timedatectl set-timezone UTC 2>/dev/null
+  g "  Timezone: UTC"
+
+  echo "  Clearing /tmp..."
+  rm -rf /tmp/sentinel-* /tmp/*.log 2>/dev/null
+  g "  /tmp cleaned."
+
+  echo "  Clearing DNS cache..."
+  sudo systemd-resolve --flush-caches 2>/dev/null || sudo resolvectl flush-caches 2>/dev/null
+  g "  DNS cache flushed."
+
+  echo ""
+  g "OPSEC cleanup complete. Re-run 'sentinel-opsec check' to verify."
+}
+
+cmd_dns_leaks(){
+  c "DNS Leak Check"
+  echo ""
+  echo "  Your DNS resolver:"
+  grep nameserver /etc/resolv.conf 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  Testing external resolution..."
+  local resolver=$(dig +short whoami.akamai.net @ns1-1.akamaitech.net 2>/dev/null)
+  echo "  External sees your DNS as: ${resolver:-unknown}"
+  echo ""
+  dim "  For privacy: use Tor DNS or a trusted resolver (9.9.9.9, 1.1.1.1)"
+}
+
+cmd_score(){
+  SCORE=100; ISSUES=()
+  # Run checks silently
+  git config --global user.name >/dev/null 2>&1 && _deduct 10 "git name"
+  pgrep -x tor >/dev/null 2>&1 || _deduct 15 "no tor"
+  ip link show 2>/dev/null | grep -qE "tun|wg" || _deduct 10 "no vpn"
+  [ "$(wc -l < ~/.bash_history 2>/dev/null || echo 0)" -gt 100 ] && _deduct 5 "large history"
+  grep -qiE "ssh.*@|pass|token" ~/.bash_history 2>/dev/null && _deduct 15 "creds in history"
+
+  if [ "$SCORE" -ge 80 ]; then g "OPSEC: $SCORE/100"
+  elif [ "$SCORE" -ge 50 ]; then y "OPSEC: $SCORE/100"
+  else r "OPSEC: $SCORE/100"; fi
+}
+
+usage(){
+  cat << 'USAGE'
+
+  sentinel-opsec — operational security checker
+
+  Commands:
+    check              Full OPSEC audit (0-100 score)
+    cleanup            Fix identified OPSEC issues
+    dns-leaks          Check for DNS leaks
+    score              Quick OPSEC score (one line)
+
+USAGE
+}
+
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  check)      cmd_check ;;
+  cleanup)    cmd_cleanup ;;
+  dns-leaks)  cmd_dns_leaks ;;
+  dns)        cmd_dns_leaks ;;
+  score)      cmd_score ;;
+  help|--help|-h) usage ;;
+  *)          r "Unknown: $cmd"; usage; exit 1 ;;
+esac
