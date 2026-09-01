@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# sentinel-fingerprint — Network DNA Profiler
+# Fingerprints networks by behavioral patterns, not just ports/services.
+# Detects honeypots, profiles OS behavior, and compares network signatures.
+
+DIR="$HOME/.sentinel/fingerprints"; mkdir -p "$DIR"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+bold(){ printf '\e[1m%s\e[0m\n' "$*"; }
+
+cmd_scan(){
+  local target="${1:?usage: sentinel-fingerprint scan <ip_or_range>}"
+  local stamp=$(date +%Y%m%d-%H%M%S)
+  local report="$DIR/fp-${target//\//-}-${stamp}.json"
+
+  c "Network DNA Fingerprinting: $target"
+  dim "Analyzing behavioral patterns..."
+  echo ""
+
+  local fp_data="{"
+  fp_data+="\"target\":\"$target\",\"timestamp\":\"$(date -u)\","
+
+  # 1. TTL analysis
+  bold "1. TTL Analysis"
+  local ttl=$(timeout 5 ping -c 3 -W 2 "$target" 2>/dev/null | grep "ttl=" | head -1 | grep -oP 'ttl=\K\d+')
+  if [ -n "$ttl" ]; then
+    local os_guess="Unknown"
+    [ "$ttl" -le 64 ] && [ "$ttl" -gt 0 ] && os_guess="Linux/Unix (TTL~64)"
+    [ "$ttl" -le 128 ] && [ "$ttl" -gt 64 ] && os_guess="Windows (TTL~128)"
+    [ "$ttl" -le 255 ] && [ "$ttl" -gt 128 ] && os_guess="Network device/Solaris (TTL~255)"
+    echo "  TTL: $ttl -> $os_guess"
+    fp_data+="\"ttl\":$ttl,\"ttl_os_guess\":\"$os_guess\","
+  else
+    echo "  TTL: no response (host may be down or blocking ICMP)"
+    fp_data+="\"ttl\":null,"
+  fi
+
+  # 2. TCP Window Size
+  bold "2. TCP Window Size"
+  local win_size=$(timeout 5 nmap -sS -T4 --top-ports 1 "$target" 2>/dev/null | grep -oP 'Window \K\d+' | head -1)
+  if [ -z "$win_size" ]; then
+    # Try hping3
+    win_size=$(timeout 5 hping3 -S -p 80 -c 1 "$target" 2>/dev/null | grep -oP 'win=\K\d+' | head -1)
+  fi
+  if [ -n "$win_size" ]; then
+    echo "  Window: $win_size"
+    local win_os="Unknown"
+    case "$win_size" in
+      5840|5720)  win_os="Linux 2.4/2.6" ;;
+      14600|29200) win_os="Linux 3.x/4.x" ;;
+      65535)       win_os="Windows or macOS" ;;
+      8192)        win_os="Windows 2000/XP" ;;
+      16384)       win_os="OpenBSD" ;;
+      4128)        win_os="Cisco IOS" ;;
+    esac
+    echo "  Window OS hint: $win_os"
+    fp_data+="\"tcp_window\":$win_size,\"window_os\":\"$win_os\","
+  else
+    echo "  Window: could not determine"
+    fp_data+="\"tcp_window\":null,"
+  fi
+
+  # 3. Response timing
+  bold "3. Response Timing"
+  local times=()
+  for i in 1 2 3; do
+    local t=$(timeout 3 bash -c "
+      start=\$(date +%s%N)
+      exec 3<>/dev/tcp/$target/80 2>/dev/null && exec 3>&-
+      end=\$(date +%s%N)
+      echo \$(( (end - start) / 1000000 ))
+    " 2>/dev/null || echo "")
+    [ -n "$t" ] && times+=("$t")
+  done
+  if [ ${#times[@]} -gt 0 ]; then
+    local avg=0
+    for t in "${times[@]}"; do avg=$((avg+t)); done
+    avg=$((avg / ${#times[@]}))
+    echo "  Avg response: ${avg}ms (${times[*]})"
+    fp_data+="\"response_ms\":$avg,"
+    # Consistent timing = real device; jittery = VM or honeypot
+    local max=${times[0]} min=${times[0]}
+    for t in "${times[@]}"; do
+      [ "$t" -gt "$max" ] && max=$t
+      [ "$t" -lt "$min" ] && min=$t
+    done
+    local jitter=$((max - min))
+    echo "  Jitter: ${jitter}ms"
+    fp_data+="\"jitter_ms\":$jitter,"
+  else
+    echo "  No response (port 80 closed or filtered)"
+    fp_data+="\"response_ms\":null,"
+  fi
+
+  # 4. Port behavior
+  bold "4. Port Response Pattern"
+  local open_ports=$(timeout 15 nmap -sS -T4 --top-ports 100 "$target" 2>/dev/null | grep "open" | wc -l)
+  local closed_ports=$(timeout 15 nmap -sS -T4 --top-ports 100 "$target" 2>/dev/null | grep "closed" | wc -l)
+  local filtered_ports=$(timeout 15 nmap -sS -T4 --top-ports 100 "$target" 2>/dev/null | grep "filtered" | wc -l)
+  echo "  Open: $open_ports | Closed: $closed_ports | Filtered: $filtered_ports"
+  fp_data+="\"ports\":{\"open\":$open_ports,\"closed\":$closed_ports,\"filtered\":$filtered_ports},"
+
+  # 5. Banner consistency
+  bold "5. Banner Consistency"
+  local http_banner=$(timeout 5 curl -sI "http://$target" 2>/dev/null | grep -i "^server:" | head -1 | cut -d: -f2- | xargs 2>/dev/null)
+  local ssh_banner=$(timeout 5 bash -c "exec 3<>/dev/tcp/$target/22 && head -1 <&3" 2>/dev/null || echo "")
+  [ -n "$http_banner" ] && echo "  HTTP: $http_banner"
+  [ -n "$ssh_banner" ] && echo "  SSH: $ssh_banner"
+  fp_data+="\"banners\":{\"http\":\"${http_banner:-}\",\"ssh\":\"${ssh_banner:-}\"},"
+
+  # 6. Honeypot indicators
+  bold "6. Honeypot Indicators"
+  local hp_score=0
+  local hp_reasons=()
+
+  # Too many open ports
+  if [ "$open_ports" -gt 20 ]; then
+    hp_score=$((hp_score+30))
+    hp_reasons+=("Unusually many open ports ($open_ports)")
+  fi
+  # All ports closed or all filtered (unusual)
+  if [ "$closed_ports" -eq 0 ] && [ "$filtered_ports" -gt 50 ]; then
+    hp_score=$((hp_score+15))
+    hp_reasons+=("All scanned ports filtered (suspicious)")
+  fi
+  # Very low jitter (VM-like)
+  if [ -n "${jitter:-}" ] && [ "${jitter:-0}" -lt 2 ] && [ "${avg:-0}" -gt 0 ]; then
+    hp_score=$((hp_score+10))
+    hp_reasons+=("Very consistent timing (VM-like)")
+  fi
+  # Banner mismatch
+  if [ -n "$http_banner" ] && [ -n "$ssh_banner" ]; then
+    if echo "$http_banner" | grep -qi "apache\|nginx" && echo "$ssh_banner" | grep -qi "dropbear"; then
+      hp_score=$((hp_score+20))
+      hp_reasons+=("Server stack inconsistency (web=$http_banner, ssh=$ssh_banner)")
+    fi
+  fi
+
+  if [ $hp_score -ge 40 ]; then
+    r "  LIKELY HONEYPOT (score: $hp_score/100)"
+  elif [ $hp_score -ge 20 ]; then
+    y "  Possible honeypot (score: $hp_score/100)"
+  else
+    g "  Appears genuine (score: $hp_score/100)"
+  fi
+  for reason in "${hp_reasons[@]}"; do
+    echo "    - $reason"
+  done
+
+  fp_data+="\"honeypot_score\":$hp_score}"
+
+  echo "$fp_data" > "$report"
+  echo ""
+  g "Fingerprint saved: $report"
+}
+
+cmd_detect_honeypot(){
+  local target="${1:?usage: sentinel-fingerprint detect-honeypot <ip>}"
+  c "Honeypot Detection: $target"
+  echo ""
+
+  local score=0 reasons=()
+
+  # Quick port scan
+  dim "Scanning top 100 ports..."
+  local scan=$(timeout 20 nmap -sS -T4 --top-ports 100 "$target" 2>/dev/null)
+  local open=$(echo "$scan" | grep -c "open")
+
+  [ "$open" -gt 15 ] && { score=$((score+25)); reasons+=("$open ports open (unusual for real server)"); }
+  [ "$open" -gt 30 ] && { score=$((score+25)); reasons+=("Extreme number of open ports"); }
+
+  # Check for impossible service combos
+  local has_iis=$(echo "$scan" | grep -c "Microsoft IIS")
+  local has_apache=$(echo "$scan" | grep -c "Apache")
+  [ "$has_iis" -gt 0 ] && [ "$has_apache" -gt 0 ] && { score=$((score+30)); reasons+=("Both IIS and Apache running (conflicting)"); }
+
+  # Check SSH version
+  local ssh_v=$(timeout 5 bash -c "exec 3<>/dev/tcp/$target/22 && head -1 <&3" 2>/dev/null || echo "")
+  echo "$ssh_v" | grep -qi "cowrie\|kippo\|honeypot" && { score=$((score+50)); reasons+=("SSH banner matches known honeypot ($ssh_v)"); }
+
+  # Telnet check (most real servers don't run telnet anymore)
+  timeout 3 bash -c "exec 3<>/dev/tcp/$target/23" 2>/dev/null && { score=$((score+15)); reasons+=("Telnet open (rare on real servers)"); }
+
+  echo ""
+  if [ $score -ge 50 ]; then
+    r "  VERDICT: LIKELY HONEYPOT ($score/100)"
+  elif [ $score -ge 25 ]; then
+    y "  VERDICT: SUSPICIOUS ($score/100)"
+  else
+    g "  VERDICT: APPEARS GENUINE ($score/100)"
+  fi
+  echo ""
+  for reason in "${reasons[@]}"; do
+    echo "  - $reason"
+  done
+}
+
+cmd_compare(){
+  local f1="${1:?usage: sentinel-fingerprint compare <file1.json> <file2.json>}"
+  local f2="${2:?usage: sentinel-fingerprint compare <file1.json> <file2.json>}"
+  [ -f "$f1" ] || { r "Not found: $f1"; return 1; }
+  [ -f "$f2" ] || { r "Not found: $f2"; return 1; }
+
+  c "Comparing fingerprints"
+  python3 -c "
+import json
+a=json.load(open('$f1'))
+b=json.load(open('$f2'))
+print(f'  Target A: {a.get(\"target\",\"?\")}')
+print(f'  Target B: {b.get(\"target\",\"?\")}')
+print()
+for k in ['ttl','tcp_window','response_ms','jitter_ms','honeypot_score']:
+    va=a.get(k,'?')
+    vb=b.get(k,'?')
+    match = 'MATCH' if va==vb else 'DIFFER'
+    print(f'  {k:20s}  {str(va):>10s}  {str(vb):>10s}  {match}')
+" 2>/dev/null || r "Could not parse fingerprint files."
+}
+
+cmd_os_guess(){
+  local target="${1:?usage: sentinel-fingerprint os-guess <ip>}"
+  c "Advanced OS Fingerprinting: $target"
+  echo ""
+
+  if command -v nmap >/dev/null 2>&1; then
+    bold "nmap OS detection:"
+    sudo timeout 20 nmap -O --osscan-guess "$target" 2>/dev/null | grep -E "OS details|Running|Aggressive OS" | head -5 || echo "  (OS detection failed — need root)"
+  fi
+
+  echo ""
+  bold "TTL-based guess:"
+  local ttl=$(timeout 5 ping -c 1 -W 2 "$target" 2>/dev/null | grep "ttl=" | grep -oP 'ttl=\K\d+')
+  if [ -n "$ttl" ]; then
+    echo "  TTL=$ttl"
+    [ "$ttl" -le 64 ] && echo "  -> Linux/Unix/macOS"
+    [ "$ttl" -gt 64 ] && [ "$ttl" -le 128 ] && echo "  -> Windows"
+    [ "$ttl" -gt 128 ] && echo "  -> Network device / Solaris / unusual"
+  fi
+}
+
+usage(){
+  cat << 'USAGE'
+
+  sentinel-fingerprint — Network DNA Profiler
+
+  Commands:
+    scan <ip/range>            Full behavioral fingerprint
+    detect-honeypot <ip>       Detect if target is a honeypot
+    compare <f1.json> <f2.json> Compare two fingerprints
+    os-guess <ip>              Advanced OS fingerprinting
+
+USAGE
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  scan)            cmd_scan "$@" ;;
+  detect-honeypot) cmd_detect_honeypot "$@" ;;
+  compare)         cmd_compare "$@" ;;
+  os-guess)        cmd_os_guess "$@" ;;
+  help|--help|-h)  usage ;;
+  *)               r "Unknown: $cmd"; usage; exit 1 ;;
+esac
