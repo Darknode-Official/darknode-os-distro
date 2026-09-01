@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# sentinel-decoy — decoy network generator.
+# Generates fake but convincing services, files, and credentials to waste attacker time.
+#
+#   sentinel-decoy honeypot ssh 2222       — run fake SSH on port 2222
+#   sentinel-decoy honeypot http 8080      — run fake HTTP on port 8080
+#   sentinel-decoy files /shares/          — plant convincing fake files
+#   sentinel-decoy creds /shares/IT/       — plant fake credential files
+#   sentinel-decoy status                  — show active decoys
+#   sentinel-decoy stop                    — stop all decoys
+
+DIR="$HOME/.sentinel/decoys"
+PIDS_FILE="$DIR/active_pids"
+LOG="$DIR/decoy.log"
+mkdir -p "$DIR"
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+
+_log(){ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
+
+cmd_honeypot(){
+  local svc="${1:?usage: sentinel-decoy honeypot <ssh|http|ftp|telnet|smb> <port>}"
+  local port="${2:?missing port}"
+
+  c "Deploying decoy $svc on port $port..."
+
+  case "$svc" in
+    ssh)
+      # Fake SSH banner that logs connection attempts
+      (while true; do
+        echo "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.4" | \
+          nc -l -p "$port" -q1 2>/dev/null | while read -r line; do
+            _log "SSH_PROBE port=$port from=$(echo "$line" | head -c 100)"
+          done
+        sleep 0.1
+      done) &
+      echo "$!" >> "$PIDS_FILE"
+      g "Fake SSH running on port $port (PID $!)"
+      dim "Banner: OpenSSH_8.9p1 Ubuntu"
+      ;;
+    http)
+      # Fake HTTP server returning a convincing login page
+      (while true; do
+        {
+          echo "HTTP/1.1 200 OK"
+          echo "Server: Apache/2.4.57 (Ubuntu)"
+          echo "Content-Type: text/html"
+          echo ""
+          echo "<html><head><title>Admin Panel</title></head><body>"
+          echo "<h2>Admin Login</h2>"
+          echo "<form method=POST action=/login>"
+          echo "<input name=user placeholder=Username><br>"
+          echo "<input name=pass type=password placeholder=Password><br>"
+          echo "<button>Login</button></form></body></html>"
+        } | nc -l -p "$port" -q1 2>/dev/null | while read -r line; do
+          _log "HTTP_PROBE port=$port data=$(echo "$line" | head -c 200)"
+        done
+        sleep 0.1
+      done) &
+      echo "$!" >> "$PIDS_FILE"
+      g "Fake HTTP admin panel on port $port (PID $!)"
+      ;;
+    ftp)
+      (while true; do
+        echo "220 ProFTPD 1.3.7 Server ready." | \
+          nc -l -p "$port" -q1 2>/dev/null | while read -r line; do
+            _log "FTP_PROBE port=$port cmd=$(echo "$line" | head -c 100)"
+          done
+        sleep 0.1
+      done) &
+      echo "$!" >> "$PIDS_FILE"
+      g "Fake FTP on port $port (PID $!)"
+      ;;
+    telnet)
+      (while true; do
+        printf "Ubuntu 22.04 LTS\nlogin: " | \
+          nc -l -p "$port" -q1 2>/dev/null | while read -r line; do
+            _log "TELNET_PROBE port=$port input=$(echo "$line" | head -c 100)"
+          done
+        sleep 0.1
+      done) &
+      echo "$!" >> "$PIDS_FILE"
+      g "Fake Telnet on port $port (PID $!)"
+      ;;
+    *)
+      r "Unknown service: $svc. Use: ssh, http, ftp, telnet"
+      return 1
+      ;;
+  esac
+  _log "DEPLOYED decoy=$svc port=$port pid=$!"
+}
+
+cmd_files(){
+  local target_dir="${1:-.}"
+  c "Planting decoy files in $target_dir..."
+  mkdir -p "$target_dir"
+
+  # Convincing fake files that waste attacker time
+  echo "Server: db-prod-01.internal.corp.local
+Database: mysql 8.0.32
+Port: 3306
+Credentials: Moved to vault. Contact DBA team.
+Backup schedule: daily 02:00 UTC
+Last backup: $(date -d '1 day ago' '+%Y-%m-%d' 2>/dev/null || date '+%Y-%m-%d')" > "$target_dir/db-config-BACKUP.txt"
+
+  echo "VPN Configuration (DO NOT SHARE)
+Server: vpn.corp.local
+Port: 1194
+Protocol: UDP
+Auth: certificate + LDAP
+CA: /etc/openvpn/ca.crt
+Cert: See IT ticket #4521 for your cert
+Contact: network-team@corp.local" > "$target_dir/vpn-setup-notes.txt"
+
+  echo "SSH Jump Box Access
+Host: jumpbox.corp.local (10.0.1.5)
+User: svc_deploy
+Key: Rotated monthly - current key in HashiCorp Vault
+Path: secret/ssh/jumpbox
+Last rotation: $(date -d '5 days ago' '+%Y-%m-%d' 2>/dev/null || date '+%Y-%m-%d')" > "$target_dir/ssh-access.txt"
+
+  echo "API Keys (INTERNAL ONLY)
+Stripe: sk_test_ROTATED_SEE_VAULT
+AWS: AKIA_ROTATED_CHECK_SECRETS_MANAGER
+Slack: xoxb-EXPIRED-GET-NEW-FROM-IT
+GitHub PAT: ghp_REVOKED_20240101" > "$target_dir/api-keys-OLD.txt"
+
+  local count=4
+  g "Planted $count decoy files in $target_dir"
+  ls -la "$target_dir"/*.txt 2>/dev/null | sed 's/^/  /'
+  _log "PLANTED files=$count dir=$target_dir"
+  dim "All files contain fake data designed to waste attacker time."
+}
+
+cmd_creds(){
+  local target_dir="${1:-.}"
+  c "Planting decoy credentials in $target_dir..."
+  mkdir -p "$target_dir"
+
+  # Fake credential files that look real
+  echo "# Internal Credentials — CONFIDENTIAL
+# Last updated: $(date '+%Y-%m-%d')
+# Rotated quarterly by IT Security
+
+admin:$(openssl rand -base64 12 2>/dev/null || echo 'P@ssw0rd2024!')
+root:$(openssl rand -base64 12 2>/dev/null || echo 'R00t!Secur3')
+deploy:$(openssl rand -base64 12 2>/dev/null || echo 'D3pl0y#2024')
+backup:$(openssl rand -base64 12 2>/dev/null || echo 'B4ckup!Key')
+monitoring:$(openssl rand -base64 12 2>/dev/null || echo 'M0n!t0r99')
+
+# NOTE: If you found this file, report it to security@corp.local
+# These are rotated every 90 days." > "$target_dir/credentials-DO-NOT-DELETE.txt"
+
+  echo "# WiFi Passwords — Facilities Team
+Corp-Main: WPA2-Enterprise (use your AD creds)
+Corp-Guest: GuestAccess2024!
+IoT-Devices: Iot_Secure_$(openssl rand -hex 4 2>/dev/null || echo 'a1b2c3d4')
+Printers: PrintNet_$(date '+%Y')" > "$target_dir/wifi-passwords.txt"
+
+  g "Planted credential decoys in $target_dir"
+  _log "PLANTED creds dir=$target_dir"
+  y "These are FAKE credentials. Any use triggers an alert."
+}
+
+cmd_status(){
+  c "Decoy Status"
+  echo ""
+  local active=0
+  if [ -f "$PIDS_FILE" ]; then
+    while read -r pid; do
+      if kill -0 "$pid" 2>/dev/null; then
+        g "  PID $pid: running"
+        active=$((active+1))
+      else
+        dim "  PID $pid: stopped"
+      fi
+    done < "$PIDS_FILE"
+  fi
+  echo ""
+  echo "  Active decoys: $active"
+  echo "  Log entries: $(wc -l < "$LOG" 2>/dev/null || echo 0)"
+  echo ""
+  if [ -f "$LOG" ]; then
+    echo "  Recent alerts:"
+    tail -5 "$LOG" | sed 's/^/    /'
+  fi
+}
+
+cmd_stop(){
+  c "Stopping all decoys..."
+  if [ -f "$PIDS_FILE" ]; then
+    while read -r pid; do
+      kill "$pid" 2>/dev/null && echo "  Stopped PID $pid"
+    done < "$PIDS_FILE"
+    rm -f "$PIDS_FILE"
+  fi
+  g "All decoys stopped."
+  _log "STOPPED all decoys"
+}
+
+cmd_alerts(){
+  c "Decoy Alerts"
+  echo ""
+  if [ -f "$LOG" ] && [ -s "$LOG" ]; then
+    cat "$LOG" | sed 's/^/  /'
+  else
+    dim "  No alerts yet."
+  fi
+}
+
+usage(){
+  cat << 'USAGE'
+
+  sentinel-decoy — decoy network generator
+
+  Commands:
+    honeypot <svc> <port>   Run a fake service (ssh/http/ftp/telnet)
+    files <dir>             Plant convincing fake files
+    creds <dir>             Plant fake credential files
+    status                  Show active decoys and alerts
+    alerts                  Show all logged probe attempts
+    stop                    Stop all running decoys
+
+  Every connection to a decoy is logged. Any access = attacker.
+
+USAGE
+}
+
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  honeypot)  cmd_honeypot "$@" ;;
+  files)     cmd_files "$@" ;;
+  creds)     cmd_creds "$@" ;;
+  status)    cmd_status ;;
+  alerts)    cmd_alerts ;;
+  stop)      cmd_stop ;;
+  help|--help|-h) usage ;;
+  *)         r "Unknown: $cmd"; usage; exit 1 ;;
+esac

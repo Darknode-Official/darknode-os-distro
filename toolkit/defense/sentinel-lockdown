@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# sentinel-lockdown — emergency lockdown system.
+# One-command incident response: isolate, preserve evidence, contain.
+
+DIR="$HOME/.sentinel/lockdown"
+STATE="$DIR/state.json"
+mkdir -p "$DIR"
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+ts(){ date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+cmd_activate(){
+  r "EMERGENCY LOCKDOWN ACTIVATED"
+  echo ""
+
+  echo '{"activated":"'$(ts)'","status":"locked"}' > "$STATE"
+
+  echo "[$(ts)] Lockdown activated" >> "$DIR/lockdown.log"
+
+  # Step 1: Capture volatile evidence
+  c "Step 1: Preserving volatile evidence..."
+  ps auxf > "$DIR/processes.txt" 2>/dev/null
+  ss -tlnp > "$DIR/connections.txt" 2>/dev/null
+  netstat -rn > "$DIR/routes.txt" 2>/dev/null
+  ip addr > "$DIR/interfaces.txt" 2>/dev/null
+  who > "$DIR/logged-in.txt" 2>/dev/null
+  last -20 > "$DIR/last-logins.txt" 2>/dev/null
+  env > "$DIR/environment.txt" 2>/dev/null
+  g "  Evidence preserved in $DIR/"
+
+  # Step 2: Block all inbound connections except SSH from current session
+  c "Step 2: Isolating network..."
+  local my_ip=$(echo "$SSH_CLIENT" 2>/dev/null | awk '{print $1}')
+  sudo iptables -I INPUT 1 -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+  [ -n "$my_ip" ] && sudo iptables -I INPUT 2 -s "$my_ip" -p tcp --dport 22 -j ACCEPT 2>/dev/null
+  sudo iptables -A INPUT -j DROP 2>/dev/null
+  sudo iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+  sudo iptables -A OUTPUT -p udp --dport 53 -j ACCEPT 2>/dev/null
+  sudo iptables -A OUTPUT -j DROP 2>/dev/null
+  g "  Network isolated (only your SSH session preserved)"
+
+  # Step 3: Kill suspicious processes
+  c "Step 3: Identifying suspicious processes..."
+  local suspicious=$(ps aux | grep -iE "nc -|ncat|socat.*exec|reverse|beacon|shell|meterp|empire|cobalt" | grep -v grep | awk '{print $2}')
+  if [ -n "$suspicious" ]; then
+    echo "$suspicious" | while read -r pid; do
+      y "  Killing suspicious PID: $pid ($(ps -p "$pid" -o comm= 2>/dev/null))"
+      sudo kill -9 "$pid" 2>/dev/null
+    done
+  else
+    dim "  No obviously suspicious processes found."
+  fi
+
+  # Step 4: Disable unnecessary services
+  c "Step 4: Hardening services..."
+  for svc in apache2 nginx mysql postgresql redis-server docker; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+      sudo systemctl stop "$svc" 2>/dev/null
+      echo "  Stopped: $svc"
+    fi
+  done
+
+  echo ""
+  r "LOCKDOWN COMPLETE"
+  echo "  Evidence: $DIR/"
+  echo "  Status:   sentinel-lockdown status"
+  echo "  Release:  sentinel-lockdown release"
+}
+
+cmd_network_only(){
+  c "Network-Only Lockdown"
+  dim "Blocking all inbound/outbound except your SSH session..."
+
+  echo '{"activated":"'$(ts)'","status":"network-locked"}' > "$STATE"
+
+  local my_ip=$(echo "$SSH_CLIENT" 2>/dev/null | awk '{print $1}')
+  sudo iptables-save > "$DIR/iptables-backup.rules" 2>/dev/null
+  sudo iptables -F 2>/dev/null
+  sudo iptables -I INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+  [ -n "$my_ip" ] && sudo iptables -I INPUT -s "$my_ip" -p tcp --dport 22 -j ACCEPT
+  sudo iptables -A INPUT -j DROP
+  sudo iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+  sudo iptables -A OUTPUT -j DROP
+  g "Network locked down. Only your SSH preserved."
+  dim "Release: sentinel-lockdown release"
+}
+
+cmd_preserve(){
+  c "Preserving Volatile Evidence..."
+  mkdir -p "$DIR/evidence-$(date +%s)"
+  local edir="$DIR/evidence-$(date +%s)"
+
+  ps auxf > "$edir/ps.txt" 2>/dev/null
+  ss -tlnp > "$edir/ss.txt" 2>/dev/null
+  ip addr > "$edir/ip.txt" 2>/dev/null
+  netstat -rn > "$edir/routes.txt" 2>/dev/null
+  who > "$edir/who.txt" 2>/dev/null
+  last -50 > "$edir/last.txt" 2>/dev/null
+  cat /proc/net/tcp > "$edir/proc-tcp.txt" 2>/dev/null
+  ls -laR /tmp/ > "$edir/tmp-listing.txt" 2>/dev/null
+  find / -newer /etc/hostname -type f 2>/dev/null | head -100 > "$edir/recent-files.txt"
+  sudo crontab -l > "$edir/crontab-root.txt" 2>/dev/null
+  crontab -l > "$edir/crontab-user.txt" 2>/dev/null
+  sha256sum "$edir"/* > "$edir/hashes.txt" 2>/dev/null
+
+  g "Evidence preserved in $edir/"
+  echo "  Files: $(ls "$edir" | wc -l)"
+}
+
+cmd_status(){
+  c "Lockdown Status"
+  echo ""
+  if [ -f "$STATE" ]; then
+    local status=$(python3 -c "import json;d=json.load(open('$STATE'));print(d.get('status','unknown'))" 2>/dev/null)
+    local activated=$(python3 -c "import json;d=json.load(open('$STATE'));print(d.get('activated','?'))" 2>/dev/null)
+    case "$status" in
+      locked)         r "  Status: FULL LOCKDOWN" ;;
+      network-locked) y "  Status: NETWORK LOCKED" ;;
+      released)       g "  Status: RELEASED" ;;
+      *)              echo "  Status: $status" ;;
+    esac
+    echo "  Since: $activated"
+  else
+    g "  Status: NORMAL (no lockdown active)"
+  fi
+  echo ""
+  echo "  Evidence files: $(find "$DIR" -type f -name "*.txt" 2>/dev/null | wc -l)"
+  echo "  iptables rules: $(sudo iptables -S 2>/dev/null | wc -l)"
+}
+
+cmd_release(){
+  c "Releasing Lockdown..."
+  # Restore iptables
+  if [ -f "$DIR/iptables-backup.rules" ]; then
+    sudo iptables-restore < "$DIR/iptables-backup.rules" 2>/dev/null
+    g "  Firewall rules restored from backup."
+  else
+    sudo iptables -F 2>/dev/null
+    sudo iptables -P INPUT ACCEPT 2>/dev/null
+    sudo iptables -P OUTPUT ACCEPT 2>/dev/null
+    g "  Firewall flushed (default accept)."
+  fi
+
+  echo '{"activated":"'$(ts)'","status":"released"}' > "$STATE"
+  echo "[$(ts)] Lockdown released" >> "$DIR/lockdown.log"
+  g "Lockdown released. Normal operation restored."
+}
+
+usage(){
+  cat << 'USAGE'
+
+  sentinel-lockdown — emergency lockdown system
+
+  Commands:
+    activate         Full lockdown (preserve + isolate + contain)
+    network-only     Block all network except your SSH
+    preserve         Capture volatile evidence only (no lockdown)
+    status           Show lockdown status
+    release          Restore normal operation
+
+USAGE
+}
+
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  activate)      cmd_activate ;;
+  network-only)  cmd_network_only ;;
+  preserve)      cmd_preserve ;;
+  status)        cmd_status ;;
+  release)       cmd_release ;;
+  help|--help|-h) usage ;;
+  *)             r "Unknown: $cmd"; usage; exit 1 ;;
+esac
