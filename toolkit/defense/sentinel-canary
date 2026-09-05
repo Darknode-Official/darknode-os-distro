@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-canary — deploy honeytokens and canary files.
+# sentinel-canary — deploy honeytokens and canary files
 
 CAN_DIR="$HOME/.sentinel/canaries"
 mkdir -p "$CAN_DIR"

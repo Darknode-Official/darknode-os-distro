@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-breachcheck — check emails/domains/passwords against breach databases
+# sentinel-breachcheck — check emails, domains, and passwords against breach databases
 DIR="$HOME/.sentinel/breachcheck"; mkdir -p "$DIR"
 c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
 g(){ printf '\e[32m%s\e[0m\n' "$*"; }

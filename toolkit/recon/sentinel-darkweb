@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-darkweb — Search dark-web and breach sources for a target over Tor.
+# sentinel-darkweb — search dark-web and breach sources for a target over Tor
 set -uo pipefail
 DIR="$HOME/.sentinel/darkweb"; mkdir -p "$DIR"
 c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }

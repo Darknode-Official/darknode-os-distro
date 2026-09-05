@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-lockout — panic-button defensive lockdown for Sentinel OS.
+# sentinel-lockout — panic-button defensive lockdown for Sentinel OS
 # Engages every reasonable host defense to stop an in-progress attack:
 #   * firewall to drop ALL new inbound (only loopback + established replies survive)
 #   * kernel/network hardening (anti-spoof, SYN-cookies, no redirects/source-route)

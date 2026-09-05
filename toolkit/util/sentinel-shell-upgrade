@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-shell-upgrade — Upgrade dumb reverse shells to fully interactive TTYs.
+# sentinel-shell-upgrade — upgrade dumb reverse shells to fully interactive TTYs
 set -uo pipefail
 c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
 g(){ printf '\e[32m%s\e[0m\n' "$*"; }

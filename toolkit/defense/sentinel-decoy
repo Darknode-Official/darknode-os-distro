@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-decoy — decoy network generator.
+# sentinel-decoy — decoy network generator
 # Generates fake but convincing services, files, and credentials to waste attacker time.
 #
 #   sentinel-decoy honeypot ssh 2222       — run fake SSH on port 2222

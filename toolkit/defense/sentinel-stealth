@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-stealth — "Look boring" toggle for XFCE — switch to a plain desktop and hide tools.
+# sentinel-stealth — "look boring" toggle for XFCE — plain desktop, tools hidden
 # Quick "look boring" toggle for XFCE (undercover-lite): switch to a plain light
 set -uo pipefail
 # theme + neutral wallpaper, or restore the Sentinel dark look. Also a panic mode.

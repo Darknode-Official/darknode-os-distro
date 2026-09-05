@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-scope — engagement authorization guard. Define your in-scope targets once;
+# sentinel-scope — engagement authorization guard — enforce your in-scope targets
 # Sentinel's offensive tools refuse to touch anything outside them. Unique to Sentinel OS:
 # it turns "only test what you're authorized to" from a sticky-note into an enforced rule.
 #

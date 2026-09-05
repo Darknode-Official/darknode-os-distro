@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-opsec — operational security checker.
+# sentinel-opsec — operational security checker
 # Comprehensive OPSEC audit: data leaks, attribution risks, cleanup.
 
 c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }

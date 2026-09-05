@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-toolkit — verify and install the complete hacking toolkit
+# sentinel-toolkit — verify and install the external hacking toolkit
 #   sentinel-toolkit check      — verify all tools are installed
 #   sentinel-toolkit install    — install missing tools
 #   sentinel-toolkit list       — list all tools by category

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-report — professional penetration test report generator
+# sentinel-report — professional penetration-test report generator
 #   sentinel-report init <project>             — start a new engagement
 #   sentinel-report finding <critical|high|medium|low|info> — add a finding
 #   sentinel-report screenshot <file> [desc]   — attach a screenshot

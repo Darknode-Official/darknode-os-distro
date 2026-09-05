@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-baseline — network traffic baseline and anomaly detection.
+# sentinel-baseline — network traffic baseline and anomaly detection
 
 BL_DIR="$HOME/.sentinel/baseline"
 mkdir -p "$BL_DIR"

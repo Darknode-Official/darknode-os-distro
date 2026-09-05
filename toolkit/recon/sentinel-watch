@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-watch — monitor an authorized target's attack surface for CHANGES over time:
+# sentinel-watch — monitor an authorized target's attack surface for changes over time
 # new/removed subdomains (cert transparency) and open ports. Snapshots + diffs each run.
 # Unique to Sentinel: recon is usually one-shot; this catches drift (a new subdomain or a
 # freshly-opened port is often the way in). Passive by default; --once for a single check.

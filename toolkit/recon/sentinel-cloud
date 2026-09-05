@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-cloud — cloud pentesting suite (AWS/Azure/GCP)
+# sentinel-cloud — cloud pentesting suite for AWS, Azure, and GCP
 set -uo pipefail
 OUT_DIR="$HOME/.sentinel/cloud"
 mkdir -p "$OUT_DIR"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-cheat — instant, offline AI cheat sheet for a tool or technique. Uses the
+# sentinel-cheat — instant offline AI cheat sheet for a tool or technique
 # free local model (no API key, no cost). e.g. `sentinel-cheat smb enumeration`.
 set -uo pipefail
 Q="$*"; [ -n "$Q" ] || { echo "usage: sentinel-cheat <tool|technique>   e.g. sentinel-cheat kerberoasting"; exit 1; }

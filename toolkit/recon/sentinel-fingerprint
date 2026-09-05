@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-fingerprint — Network DNA Profiler
+# sentinel-fingerprint — fingerprint a host's network stack and services
 # Fingerprints networks by behavioral patterns, not just ports/services.
 # Detects honeypots, profiles OS behavior, and compares network signatures.
 

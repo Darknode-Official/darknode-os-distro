@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-timeline — Attack Timeline Recorder
+# sentinel-timeline — record an attack timeline of your actions
 # Records and replays penetration testing sessions with timestamps,
 # milestones, and terminal state captures. Original tool.
 

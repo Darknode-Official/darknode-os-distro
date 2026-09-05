@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-wallpaper — browse, set, and rotate the Sentinel desktop backgrounds.
+# sentinel-wallpaper — browse, set, and rotate the Sentinel desktop backgrounds
 #   sentinel-wallpaper                 list installed wallpapers
 #   sentinel-wallpaper set <n|name>    apply one (by number or filename)
 #   sentinel-wallpaper next | prev     step through the set

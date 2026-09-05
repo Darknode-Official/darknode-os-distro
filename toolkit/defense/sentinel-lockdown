@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-lockdown — emergency lockdown system.
+# sentinel-lockdown — emergency lockdown system
 # One-command incident response: isolate, preserve evidence, contain.
 
 DIR="$HOME/.sentinel/lockdown"

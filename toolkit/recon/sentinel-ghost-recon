@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-ghost-recon — zero-touch passive recon.
+# sentinel-ghost-recon — zero-touch passive reconnaissance
 # NEVER sends a single packet to the target. Uses only public databases,
 # caches, and third-party APIs. Proves zero contact with a tcpdump check.
 #

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-anon — System-wide Tor anonymization with an nftables kill-switch and leak self-test.
+# sentinel-anon — system-wide Tor anonymization with an nftables kill-switch and leak self-test
 # System-wide Tor anonymization with an nftables kill-switch + leak self-test.
 # Improves on AnonSurf: native nftables, debian-tor uid, verifies before saying "on".
 set -uo pipefail

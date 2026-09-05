@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-tweaks — Sentinel control center — toggle modes and system tweaks.
+# sentinel-tweaks — Sentinel control center — toggle modes and system tweaks
 # Sentinel control center — toggle modes (Predator-OS/kali-tweaks style).
 set -uo pipefail
 command -v whiptail >/dev/null || { echo "install whiptail"; exit 1; }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-re — reverse engineering workbench
+# sentinel-re — reverse-engineering workbench
 set -uo pipefail
 c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
 g(){ printf '\e[32m%s\e[0m\n' "$*"; }

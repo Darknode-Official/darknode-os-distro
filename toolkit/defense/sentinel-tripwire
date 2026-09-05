@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-tripwire — Custom Tripwire System
+# sentinel-tripwire — custom tripwire system for intrusion detection
 # Deploy file integrity monitors with SHA256 baselines. Detects modifications,
 # new files, deletions, and permission changes. Original implementation.
 

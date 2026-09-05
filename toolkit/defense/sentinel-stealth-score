@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-stealth-score — Stealth Scorer
+# sentinel-stealth-score — score how stealthy your current setup is
 # Rates how detectable your current attack posture is (0-100).
 # Original concept — no existing tool does this.
 

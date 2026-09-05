@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-classify — malware static analysis and classification.
+# sentinel-classify — malware static analysis and classification
 
 CLS_DIR="$HOME/.sentinel/classify"
 mkdir -p "$CLS_DIR"
