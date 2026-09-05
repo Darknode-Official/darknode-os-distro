@@ -45,6 +45,7 @@ sentinel-os/
 │   ├── user-data         # the provisioner: desktop, tools, AI, branding, hardening
 │   └── meta-data         # NoCloud instance metadata
 └── toolkit/              # everything installed into the OS
+    ├── sentinel-tools    # discover/search/launch the custom toolkit (start here)
     ├── sentinel-ai       # shared AI engine (local Ollama + cloud), used by the tools
     ├── sentinel-scope    # engagement authorization guard (in-scope enforcement)
     ├── sentinel-recon    # AI-orchestrated recon -> prioritized findings

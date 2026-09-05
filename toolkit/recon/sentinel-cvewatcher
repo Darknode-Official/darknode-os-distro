@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# sentinel-cvewatcher — Track products on a CVE watchlist and check for new vulnerabilities.
 set -uo pipefail
 DIR="$HOME/.sentinel/cvewatcher"; mkdir -p "$DIR"
 WATCHFILE="$DIR/watchlist.txt"

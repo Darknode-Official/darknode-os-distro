@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# sentinel-collab — Share files and notes with teammates over a local HTTP server.
 set -uo pipefail
 DIR="$HOME/.sentinel/collab"; mkdir -p "$DIR/shared" "$DIR/notes"
 c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }

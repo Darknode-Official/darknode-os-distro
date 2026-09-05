@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# sentinel-engage-mgr — Manage pentest engagements — create, switch, and track the active one.
 set -uo pipefail
 DIR="$HOME/.sentinel/engagements"; mkdir -p "$DIR"
 CURRENT="$DIR/.current"

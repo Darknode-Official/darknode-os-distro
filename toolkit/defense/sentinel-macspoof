@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# sentinel-macspoof — Randomize or restore the MAC address of a network interface.
 # Randomize (or restore) the MAC of an interface. Default: first non-lo iface.
 set -uo pipefail
 [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
