@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-attack-surface — Attack Surface Mapper
+# sentinel-attack-surface — map a target's external attack surface
 # Maps complete attack surface into a structured risk-scored inventory.
 # Combines subdomains, ports, services, technologies, and CVEs. Original tool.
 

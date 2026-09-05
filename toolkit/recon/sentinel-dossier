@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-dossier — Target Dossier Generator
+# sentinel-dossier — build an intelligence dossier on a target
 # Builds a complete intelligence package from multiple OSINT sources into
 # a single structured markdown report. Original tool.
 #

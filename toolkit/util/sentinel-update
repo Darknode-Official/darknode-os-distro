@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-update — Keep Sentinel OS and its toolkit up to date.
+# sentinel-update — keep Sentinel OS and its toolkit up to date
 set -uo pipefail
 DIR="$HOME/.sentinel/updates"; mkdir -p "$DIR"
 c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-desktop-setup — First-login desktop branding (wallpaper + dark theme); self-removes.
+# sentinel-desktop-setup — first-login desktop branding (wallpaper + dark theme); self-removes
 # First-login desktop branding for Sentinel OS — wallpaper + dark theme. Self-removes.
 set -u
 # default wallpaper: the classic Sentinel splash from the set, else the legacy copy.

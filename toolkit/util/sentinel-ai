@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-ai — the shared AI engine every Sentinel tool speaks to.
+# sentinel-ai — shared AI engine every Sentinel tool speaks to
 # Local by default (Ollama), cloud automatically if a key is present. Streams.
 #
 #   sentinel-ai "explain this nmap output"           # prompt as args

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-arsenal — Install on-demand tool arsenals (BlackArch-style groups) from Debian repos.
+# sentinel-arsenal — install on-demand tool arsenals (BlackArch-style groups) from Debian repos
 # On-demand tool arsenals (BlackArch-style groups) from Debian repos.
 set -uo pipefail
 [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"

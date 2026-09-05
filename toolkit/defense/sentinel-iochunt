@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-iochunt — hunt for indicators of compromise on the local system.
+# sentinel-iochunt — hunt for indicators of compromise on the local system
 
 IOC_DIR="$HOME/.sentinel/iochunt"
 mkdir -p "$IOC_DIR"

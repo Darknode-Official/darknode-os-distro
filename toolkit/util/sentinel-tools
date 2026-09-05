@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-tools — discover and launch the Sentinel custom toolkit.
+# sentinel-tools — discover, search, and launch the Sentinel custom toolkit
 #   sentinel-tools               overview: tool counts by category
 #   sentinel-tools list          list every Sentinel tool with a one-line description
 #   sentinel-tools <category>    list one category (recon exploit post defense util)

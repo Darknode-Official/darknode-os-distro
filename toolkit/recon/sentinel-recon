@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-recon — one command: a scoped recon chain, then AI-prioritised findings + next steps.
+# sentinel-recon — scoped recon chain that yields AI-prioritised findings and next steps
 # Chains DNS/WHOIS/nmap/whatweb/TLS into a workspace and hands the whole picture to the AI.
 set -uo pipefail
 T="${1:-}"; [ -n "$T" ] || { echo "usage: sentinel-recon <ip|domain>"; exit 1; }

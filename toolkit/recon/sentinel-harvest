@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-harvest — passive OSINT harvester (a Sentinel take on theHarvester).
+# sentinel-harvest — passive OSINT harvester (a Sentinel take on theHarvester)
 # Given a domain it gathers: subdomains (certificate transparency), DNS + mail records,
 # mail-security posture (SPF/DMARC), live-host resolution, and a likely email format —
 # then the local AI turns it into an attack-surface brief. 100% passive, no API keys.

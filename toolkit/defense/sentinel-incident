@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-# sentinel-incident — structured incident documentation and response tracking.
+# sentinel-incident — structured incident documentation and response tracking
 
 INC_DIR="$HOME/.sentinel/incidents"
 CURRENT="$INC_DIR/.current"

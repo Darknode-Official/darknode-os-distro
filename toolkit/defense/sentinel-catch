@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-catch — a friendlier reverse-shell listener for authorized testing: line
+# sentinel-catch — friendly reverse-shell listener for authorized testing
 # history (rlwrap), session logging (ncat -o), and the payloads + PTY-upgrade steps
 # printed and ready to paste. e.g. `sentinel-catch 4444`.
 set -uo pipefail

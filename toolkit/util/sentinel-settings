@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-settings — system and Sentinel configuration manager.
+# sentinel-settings — system and Sentinel configuration manager
 #
 # A unified settings app covering system configuration, Sentinel toolkit
 # preferences, network, display, security, and about — modeled after

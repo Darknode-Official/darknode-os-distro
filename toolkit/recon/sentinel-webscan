@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-webscan — web application scanner orchestrator
+# sentinel-webscan — web-application scanner orchestrator
 set -uo pipefail
 SCAN_DIR="$HOME/.sentinel/webscans"
 mkdir -p "$SCAN_DIR"

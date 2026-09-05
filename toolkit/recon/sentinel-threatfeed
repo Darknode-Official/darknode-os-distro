@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sentinel-threatfeed — Pull threat-intel feeds and check IPs, domains, or hashes against them.
+# sentinel-threatfeed — pull threat-intel feeds and check IPs, domains, or hashes against them
 set -uo pipefail
 DIR="$HOME/.sentinel/threatfeed"; mkdir -p "$DIR/feeds"
 c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
