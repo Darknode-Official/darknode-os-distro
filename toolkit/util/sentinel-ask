@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# sentinel-ask — Turn a natural-language request into a shell command and optionally run it.
 # Natural-language → shell command, then optionally run it. Uses the Sentinel AI engine.
 set -uo pipefail
 Q="$*"; [ -n "$Q" ] || read -rp "What do you want to do? " Q

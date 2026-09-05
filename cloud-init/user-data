@@ -301,7 +301,7 @@ write_files:
                  sentinel-cheat sentinel-watch sentinel-catch sentinel-crack sentinel-pivot sentinel-autonomy \
                  sentinel-anon sentinel-macspoof sentinel-detonate sentinel-stealth \
                  sentinel-ask sentinel-triage sentinel-engage sentinel-arsenal \
-                 sentinel-tweaks sentinel-lockout gen-sentinel-menu sentinel-desktop-setup; do
+                 sentinel-tweaks sentinel-lockout sentinel-tools gen-sentinel-menu sentinel-desktop-setup; do
           curl -fsSL "https://raw.githubusercontent.com/SpartanKing18/sentinel-os/main/toolkit/$s" -o "/usr/local/bin/$s" && chmod +x "/usr/local/bin/$s" || echo "TOOLKIT-SKIP $s"
         done
       fi

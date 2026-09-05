@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# sentinel-evidence — Collect files into a hashed, chain-of-custody evidence locker.
 set -uo pipefail
 DIR="$HOME/.sentinel/evidence"; mkdir -p "$DIR/files" "$DIR/chain"
 c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }

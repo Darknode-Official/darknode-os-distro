@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# sentinel-greeting — Sentinel OS terminal greeting shown on each new shell.
 # Sentinel OS terminal greeting — shows on new terminal.
 # Must NEVER error or produce extra output — runs in .bashrc on every shell.
 
@@ -43,4 +44,7 @@ quotes=(
 )
 idx=$((RANDOM % ${#quotes[@]}))
 printf "  ${D}\"%s\"${R}\n" "${quotes[$idx]}"
+echo ""
+
+printf "  ${D}tip${R}  run ${T}sentinel-tools${R} ${D}to explore the toolkit · ${T}sentinel-ask${R} ${D}for natural-language commands${R}\n"
 echo ""
