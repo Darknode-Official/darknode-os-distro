@@ -1,8 +1,0 @@
-[Plymouth Theme]
-Name=Sentinel OS
-Description=Sentinel OS boot splash
-ModuleName=script
-
-[script]
-ImageDir=/usr/share/plymouth/themes/sentinel
-ScriptFile=/usr/share/plymouth/themes/sentinel/sentinel.script

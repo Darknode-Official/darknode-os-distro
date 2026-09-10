@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# darknode-re — reverse-engineering workbench
+set -uo pipefail
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+_has(){ command -v "$1" >/dev/null 2>&1; }
+
+cmd_analyze(){
+  local file="${1:?usage: darknode-re analyze <binary>}"
+  [ -f "$file" ] || { r "File not found: $file"; return 1; }
+  c "Binary Analysis: $file"
+  echo ""
+  c "=== File Type ==="
+  file "$file"
+  echo ""
+  c "=== Hashes ==="
+  echo "  MD5:    $(md5sum "$file" | cut -d' ' -f1)"
+  echo "  SHA256: $(sha256sum "$file" | cut -d' ' -f1)"
+  echo ""
+  c "=== Size ==="
+  echo "  $(du -h "$file" | cut -f1)"
+  echo ""
+  c "=== Entropy ==="
+  if _has binwalk; then
+    binwalk -E "$file" 2>/dev/null | tail -5
+  else
+    python3 -c "
+import math,sys
+data=open('$file','rb').read()
+if not data: sys.exit()
+freq=[0]*256
+for b in data: freq[b]+=1
+entropy=0
+for f in freq:
+    if f>0:
+        p=f/len(data)
+        entropy-=p*math.log2(p)
+print(f'  Entropy: {entropy:.4f} / 8.0')
+print('  ' + ('HIGH (packed/encrypted)' if entropy > 7.0 else 'NORMAL' if entropy > 4.0 else 'LOW (text/data)'))
+" 2>/dev/null
+  fi
+  echo ""
+  c "=== Interesting Strings ==="
+  strings -n 8 "$file" 2>/dev/null | grep -iE "http|password|key|flag|admin|root|cmd|exec|shell|connect|socket|crypt|base64|eval" | head -15
+  echo ""
+  c "=== Imports/Libraries ==="
+  if _has readelf; then
+    readelf -d "$file" 2>/dev/null | grep NEEDED | head -10
+  elif _has objdump; then
+    objdump -p "$file" 2>/dev/null | grep NEEDED | head -10
+  fi
+  if _has rabin2; then
+    echo ""
+    c "=== Sections ==="
+    rabin2 -S "$file" 2>/dev/null | head -15
+    echo ""
+    c "=== Imports ==="
+    rabin2 -i "$file" 2>/dev/null | head -15
+  fi
+}
+
+cmd_strings_cmd(){
+  local file="${1:?usage: darknode-re strings <binary>}"; local minlen="${2:-8}"
+  [ -f "$file" ] || { r "File not found: $file"; return 1; }
+  c "Strings (min length $minlen): $file"
+  strings -n "$minlen" "$file" 2>/dev/null | head -100
+}
+
+cmd_disasm(){
+  local file="${1:?usage: darknode-re disasm <binary>}"
+  [ -f "$file" ] || { r "File not found: $file"; return 1; }
+  c "Disassembly: $file"
+  if _has r2; then
+    r2 -q -c "aaa; pdf @main; q" "$file" 2>/dev/null || r2 -q -c "aaa; pdf @entry0; q" "$file" 2>/dev/null
+  elif _has objdump; then
+    objdump -d -M intel "$file" 2>/dev/null | head -100
+  else
+    r "Install radare2 or objdump."
+  fi
+}
+
+cmd_hex(){
+  local file="${1:?usage: darknode-re hex <binary>}"; local offset="${2:-0}"; local length="${3:-256}"
+  [ -f "$file" ] || { r "File not found: $file"; return 1; }
+  c "Hex Dump: $file (offset=$offset, length=$length)"
+  xxd -s "$offset" -l "$length" "$file" 2>/dev/null || hexdump -C -s "$offset" -n "$length" "$file" 2>/dev/null
+}
+
+cmd_extract(){
+  local file="${1:?usage: darknode-re extract <firmware_or_binary>}"
+  [ -f "$file" ] || { r "File not found: $file"; return 1; }
+  c "Extracting embedded files: $file"
+  if _has binwalk; then
+    binwalk -e "$file" 2>&1
+    g "Extracted to: _$(basename "$file").extracted/"
+  else
+    r "binwalk not installed. apt install binwalk"
+  fi
+}
+
+cmd_compare(){
+  local file1="${1:?usage: darknode-re compare <file1> <file2>}"; local file2="${2:?missing file2}"
+  [ -f "$file1" ] || { r "Not found: $file1"; return 1; }
+  [ -f "$file2" ] || { r "Not found: $file2"; return 1; }
+  c "Binary Comparison: $file1 vs $file2"
+  echo ""
+  echo "  File 1: $(du -h "$file1" | cut -f1)  $(file -b "$file1")"
+  echo "  File 2: $(du -h "$file2" | cut -f1)  $(file -b "$file2")"
+  echo ""
+  c "=== Hash Comparison ==="
+  local h1=$(sha256sum "$file1" | cut -d' ' -f1)
+  local h2=$(sha256sum "$file2" | cut -d' ' -f1)
+  [ "$h1" = "$h2" ] && g "  IDENTICAL" || r "  DIFFERENT"
+  echo "  $file1: $h1"
+  echo "  $file2: $h2"
+  echo ""
+  c "=== Byte Differences ==="
+  cmp -l "$file1" "$file2" 2>/dev/null | head -20 | while read -r offset b1 b2; do
+    printf "  offset %8s: 0x%02x -> 0x%02x\n" "$offset" "0$b1" "0$b2"
+  done
+  local diffcount=$(cmp -l "$file1" "$file2" 2>/dev/null | wc -l)
+  echo "  Total different bytes: $diffcount"
+}
+
+cmd_debug(){
+  local file="${1:?usage: darknode-re debug <binary>}"
+  [ -f "$file" ] || { r "Not found: $file"; return 1; }
+  c "Launching debugger: $file"
+  if _has gdb; then
+    gdb -q "$file"
+  elif _has r2; then
+    r2 -d "$file"
+  else
+    r "Install gdb or radare2."
+  fi
+}
+
+cmd_decompile(){
+  local file="${1:?usage: darknode-re decompile <binary>}"
+  [ -f "$file" ] || { r "Not found: $file"; return 1; }
+  c "Decompilation: $file"
+  if _has r2; then
+    r2 -q -c "aaa; pdc @main; q" "$file" 2>/dev/null || r2 -q -c "aaa; pdc @entry0; q" "$file" 2>/dev/null
+  else
+    y "For full decompilation, use Ghidra:"
+    echo "  ghidra $file"
+    dim "Or Cutter (radare2 GUI): cutter $file"
+  fi
+}
+
+usage(){
+  cat << 'EOF'
+
+  darknode-re — reverse engineering workbench
+
+  Commands:
+    analyze <binary>       Full binary analysis (type, hashes, entropy, strings, imports)
+    strings <binary> [n]   Extract strings (min length n, default 8)
+    disasm <binary>        Disassemble main function
+    decompile <binary>     Decompile (radare2/Ghidra)
+    hex <binary> [off] [n] Hex dump (offset, length)
+    extract <file>         Extract embedded files (binwalk)
+    compare <f1> <f2>      Compare two binaries
+    debug <binary>         Launch debugger (gdb/radare2)
+
+  Tools: strings, file, radare2, objdump, binwalk, gdb, xxd
+
+EOF
+}
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  analyze)   cmd_analyze "$@" ;;
+  strings)   cmd_strings_cmd "$@" ;;
+  disasm)    cmd_disasm "$@" ;;
+  decompile) cmd_decompile "$@" ;;
+  hex)       cmd_hex "$@" ;;
+  extract)   cmd_extract "$@" ;;
+  compare)   cmd_compare "$@" ;;
+  debug)     cmd_debug "$@" ;;
+  help|--help|-h) usage ;;
+  *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac

@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# darknode-breachcheck — check emails, domains, and passwords against breach databases
+DIR="$HOME/.darknode/breachcheck"; mkdir -p "$DIR"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+ts(){ date -u +%Y%m%d-%H%M%S; }
+
+cmd_email(){
+  local email="${1:?usage: darknode-breachcheck email user@target.com}"
+  c "Checking breaches for: $email"
+  echo ""
+  # HIBP API (v3, requires API key for email lookups)
+  local hibp_key="${HIBP_API_KEY:-}"
+  if [ -n "$hibp_key" ]; then
+    local resp=$(curl -s -H "hibp-api-key: $hibp_key" -H "user-agent: darknode-breachcheck" \
+      "https://haveibeenpwned.com/api/v3/breachedaccount/$(python3 -c "import urllib.parse;print(urllib.parse.quote('$email'))")?truncateResponse=false" 2>/dev/null)
+    if [ -n "$resp" ] && [ "$resp" != "[]" ]; then
+      local count=$(echo "$resp" | python3 -c "import sys,json;print(len(json.load(sys.stdin)))" 2>/dev/null || echo "?")
+      r "  BREACHED in $count databases!"
+      echo "$resp" | python3 -c "
+import sys,json
+for b in json.load(sys.stdin):
+    print(f\"  - {b['Name']} ({b.get('BreachDate','?')}) — {b.get('DataClasses',['?'])}\")
+" 2>/dev/null
+    else
+      g "  Not found in HIBP databases."
+    fi
+  else
+    dim "  HIBP API key not set. Set HIBP_API_KEY env var for email lookups."
+    dim "  Get one at: https://haveibeenpwned.com/API/Key"
+  fi
+  echo ""
+  # h8mail check
+  if command -v h8mail >/dev/null 2>&1; then
+    c "  h8mail results:"
+    h8mail -t "$email" 2>/dev/null | grep -E "^\\[|Found|Target" | head -10 | sed 's/^/    /'
+  else
+    dim "  h8mail not installed. Install: pip3 install h8mail"
+  fi
+  # Log
+  echo "$(ts) email $email" >> "$DIR/checks.log"
+}
+
+cmd_domain(){
+  local domain="${1:?usage: darknode-breachcheck domain target.com}"
+  c "Checking breach exposure for domain: $domain"
+  echo ""
+  local hibp_key="${HIBP_API_KEY:-}"
+  if [ -n "$hibp_key" ]; then
+    local resp=$(curl -s -H "hibp-api-key: $hibp_key" -H "user-agent: darknode-breachcheck" \
+      "https://haveibeenpwned.com/api/v3/breaches" 2>/dev/null)
+    if [ -n "$resp" ]; then
+      echo "$resp" | python3 -c "
+import sys,json
+breaches = json.load(sys.stdin)
+domain_breaches = [b for b in breaches if '$domain'.lower() in b.get('Domain','').lower()]
+if domain_breaches:
+    print(f'  Found {len(domain_breaches)} breaches involving $domain:')
+    for b in domain_breaches:
+        print(f\"    {b['Name']} ({b.get('BreachDate','?')}) — {b.get('PwnCount',0):,} accounts\")
+else:
+    print('  No breaches directly involving $domain found.')
+print(f'  Total breaches in HIBP: {len(breaches)}')
+" 2>/dev/null
+    fi
+  else
+    dim "  Set HIBP_API_KEY for domain breach search."
+  fi
+  echo ""
+  if command -v h8mail >/dev/null 2>&1; then
+    c "  h8mail domain search:"
+    h8mail -t "@$domain" 2>/dev/null | grep -E "Found|Target|\\[" | head -10 | sed 's/^/    /'
+  fi
+  echo "$(ts) domain $domain" >> "$DIR/checks.log"
+}
+
+cmd_bulk(){
+  local file="${1:?usage: darknode-breachcheck bulk emails.txt}"
+  [ -f "$file" ] || { r "File not found: $file"; return 1; }
+  local count=$(wc -l < "$file")
+  c "Bulk checking $count emails..."
+  local found=0
+  while IFS= read -r email; do
+    [ -n "$email" ] || continue
+    printf "  %-40s " "$email"
+    if command -v h8mail >/dev/null 2>&1; then
+      local hits=$(h8mail -t "$email" 2>/dev/null | grep -c "Found")
+      if [ "$hits" -gt 0 ]; then
+        r "BREACHED ($hits hits)"
+        found=$((found+1))
+      else
+        g "clean"
+      fi
+    else
+      dim "need h8mail"
+    fi
+  done < "$file"
+  echo ""
+  y "  Results: $found/$count emails found in breaches"
+}
+
+cmd_password(){
+  local pass="${1:?usage: darknode-breachcheck password 'password123'}"
+  c "Checking password against HIBP Pwned Passwords..."
+  local sha1=$(echo -n "$pass" | sha1sum | awk '{print toupper($1)}')
+  local prefix="${sha1:0:5}"
+  local suffix="${sha1:5}"
+  local resp=$(curl -s "https://api.pwnedpasswords.com/range/$prefix" 2>/dev/null)
+  local match=$(echo "$resp" | grep -i "$suffix" | cut -d: -f2 | tr -d '\r')
+  if [ -n "$match" ]; then
+    r "  PASSWORD COMPROMISED! Found in $match breaches."
+    y "  This password should NEVER be used."
+  else
+    g "  Password not found in HIBP database."
+    dim "  (Doesn't guarantee it's safe — just not in known breaches)"
+  fi
+}
+
+cmd_report(){
+  c "Breach Check Report"
+  echo ""
+  if [ -f "$DIR/checks.log" ]; then
+    echo "  Recent checks:"
+    tail -20 "$DIR/checks.log" | sed 's/^/    /'
+  else
+    dim "  No checks performed yet."
+  fi
+}
+
+usage(){ cat << 'U'
+  darknode-breachcheck — check emails/domains/passwords against breach databases
+
+  Commands:
+    email <addr>       Check single email against HIBP + h8mail
+    domain <domain>    Check domain breach exposure
+    bulk <file>        Bulk check emails from file
+    password <pass>    Check if password is in known breaches (k-anonymity safe)
+    report             Show recent check history
+
+  Environment:
+    HIBP_API_KEY       HaveIBeenPwned API key (https://haveibeenpwned.com/API/Key)
+U
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  email) cmd_email "$@" ;; domain) cmd_domain "$@" ;; bulk) cmd_bulk "$@" ;;
+  password) cmd_password "$@" ;; report) cmd_report ;; help|--help|-h) usage ;;
+  *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac

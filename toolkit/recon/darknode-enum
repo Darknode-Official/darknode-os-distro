@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# darknode-enum — automated enumeration orchestrator
+#   darknode-enum web <url>        — full web enumeration
+#   darknode-enum network <ip>     — full network enumeration
+#   darknode-enum domain <name>    — full domain/OSINT enumeration
+#   darknode-enum ad <dc_ip>       — Active Directory enumeration
+#   darknode-enum smb <ip>         — SMB enumeration
+#   darknode-enum full <target>    — run everything applicable
+set -uo pipefail
+
+OUT_DIR="$HOME/.darknode/enum"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+has(){ command -v "$1" >/dev/null 2>&1; }
+ts(){ date -u +%Y%m%d-%H%M%S; }
+
+_run(){
+  local label="$1"; shift
+  local tool="$1"
+  if ! has "$tool"; then
+    y "  [skip] $label ($tool not installed)"
+    return 0
+  fi
+  c "  [run] $label"
+  "$@" 2>&1 | tee -a "$LOGFILE" || true
+  echo "" >> "$LOGFILE"
+}
+
+cmd_web(){
+  local url="${1:?usage: darknode-enum web <url>}"
+  local target=$(echo "$url" | sed 's|https\?://||;s|/.*||')
+  local dir="$OUT_DIR/web-$target-$(ts)"
+  mkdir -p "$dir"
+  LOGFILE="$dir/enum.log"
+
+  c "Web Enumeration: $url"
+  c "Output: $dir"
+  echo ""
+
+  _run "Technology fingerprint" whatweb "$url"
+  _run "WAF detection" wafw00f "$url"
+  _run "HTTP headers" curl -sI "$url"
+  _run "robots.txt" curl -s "$url/robots.txt"
+  _run "sitemap.xml" curl -s "$url/sitemap.xml"
+
+  if has gobuster; then
+    c "  [run] Directory brute-force (gobuster)"
+    gobuster dir -u "$url" -w /usr/share/wordlists/dirb/common.txt -o "$dir/dirs.txt" -q --no-error 2>&1 | tee -a "$LOGFILE" &
+    local gobuster_pid=$!
+  fi
+
+  if has ffuf; then
+    c "  [run] FUZZ directories (ffuf)"
+    ffuf -u "${url}/FUZZ" -w /usr/share/wordlists/dirb/common.txt -mc 200,301,302,403 -o "$dir/ffuf.json" -of json -s 2>&1 | tee -a "$LOGFILE" || true
+  fi
+
+  if has nikto; then
+    c "  [run] Vulnerability scan (nikto)"
+    nikto -h "$url" -o "$dir/nikto.txt" -Format txt 2>&1 | tee -a "$LOGFILE" &
+    local nikto_pid=$!
+  fi
+
+  if has nuclei; then
+    c "  [run] Template scan (nuclei)"
+    nuclei -u "$url" -o "$dir/nuclei.txt" -silent 2>&1 | tee -a "$LOGFILE" || true
+  fi
+
+  # SSL/TLS check
+  if echo "$url" | grep -q "https"; then
+    _run "SSL/TLS scan" sslscan "$target"
+  fi
+
+  # Wait for background jobs
+  [ -n "${gobuster_pid:-}" ] && wait "$gobuster_pid" 2>/dev/null
+  [ -n "${nikto_pid:-}" ] && wait "$nikto_pid" 2>/dev/null
+
+  echo ""
+  g "Web enumeration complete."
+  echo "  Results: $dir"
+  ls -la "$dir"
+}
+
+cmd_network(){
+  local ip="${1:?usage: darknode-enum network <ip or CIDR>}"
+  local safe=$(echo "$ip" | tr '/' '_')
+  local dir="$OUT_DIR/net-$safe-$(ts)"
+  mkdir -p "$dir"
+  LOGFILE="$dir/enum.log"
+
+  c "Network Enumeration: $ip"
+  c "Output: $dir"
+  echo ""
+
+  # Host discovery
+  _run "Host discovery (ping sweep)" nmap -sn "$ip" -oN "$dir/hosts.txt"
+
+  # Port scan
+  c "  [run] Full port scan (nmap)"
+  nmap -sV -sC -p- --open -oN "$dir/full-scan.txt" -oX "$dir/full-scan.xml" "$ip" 2>&1 | tee -a "$LOGFILE" || true
+
+  # Quick service-specific checks
+  if grep -q "445/tcp.*open" "$dir/full-scan.txt" 2>/dev/null; then
+    _run "SMB enumeration" enum4linux -a "$ip"
+    _run "SMB shares" smbclient -L "//$ip" -N
+  fi
+
+  if grep -q "161/tcp.*open\|161/udp.*open" "$dir/full-scan.txt" 2>/dev/null; then
+    _run "SNMP enumeration" snmpwalk -v2c -c public "$ip" 2>/dev/null | head -50
+  fi
+
+  if grep -q "21/tcp.*open" "$dir/full-scan.txt" 2>/dev/null; then
+    _run "FTP anonymous check" nmap --script ftp-anon -p 21 "$ip"
+  fi
+
+  if grep -q "80/tcp.*open\|443/tcp.*open\|8080/tcp.*open" "$dir/full-scan.txt" 2>/dev/null; then
+    y "  Web services detected — run: darknode-enum web http://$ip"
+  fi
+
+  echo ""
+  g "Network enumeration complete."
+  echo "  Results: $dir"
+}
+
+cmd_domain(){
+  local domain="${1:?usage: darknode-enum domain <domain.com>}"
+  local dir="$OUT_DIR/domain-$domain-$(ts)"
+  mkdir -p "$dir"
+  LOGFILE="$dir/enum.log"
+
+  c "Domain/OSINT Enumeration: $domain"
+  c "Output: $dir"
+  echo ""
+
+  _run "WHOIS" whois "$domain"
+  _run "DNS records (A)" dig "$domain" A +short
+  _run "DNS records (MX)" dig "$domain" MX +short
+  _run "DNS records (NS)" dig "$domain" NS +short
+  _run "DNS records (TXT)" dig "$domain" TXT +short
+  _run "Zone transfer attempt" dig axfr "$domain" @$(dig "$domain" NS +short | head -1)
+
+  if has amass; then
+    c "  [run] Subdomain enum (amass — passive)"
+    amass enum -passive -d "$domain" -o "$dir/subdomains-amass.txt" 2>&1 | tee -a "$LOGFILE" &
+    local amass_pid=$!
+  fi
+
+  if has subfinder; then
+    c "  [run] Subdomain enum (subfinder)"
+    subfinder -d "$domain" -o "$dir/subdomains-subfinder.txt" -silent 2>&1 | tee -a "$LOGFILE" || true
+  fi
+
+  # Certificate transparency
+  c "  [run] Certificate transparency (crt.sh)"
+  curl -s "https://crt.sh/?q=%25.$domain&output=json" 2>/dev/null | \
+    python3 -c "import sys,json;[print(e.get('name_value','')) for e in json.load(sys.stdin)]" 2>/dev/null | \
+    sort -u > "$dir/subdomains-crt.txt" || true
+  echo "    Found $(wc -l < "$dir/subdomains-crt.txt" 2>/dev/null || echo 0) from crt.sh"
+
+  if has theharvester; then
+    c "  [run] Email/host harvest (theHarvester)"
+    theharvester -d "$domain" -b all -f "$dir/harvester" 2>&1 | tee -a "$LOGFILE" || true
+  fi
+
+  # Web archive
+  c "  [run] Wayback URLs"
+  curl -s "http://web.archive.org/cdx/search/cdx?url=*.$domain&output=text&fl=original&collapse=urlkey" 2>/dev/null | \
+    sort -u | head -200 > "$dir/wayback-urls.txt" || true
+  echo "    Found $(wc -l < "$dir/wayback-urls.txt" 2>/dev/null || echo 0) archived URLs"
+
+  [ -n "${amass_pid:-}" ] && wait "$amass_pid" 2>/dev/null
+
+  # Merge subdomains
+  cat "$dir"/subdomains-*.txt 2>/dev/null | sort -u > "$dir/all-subdomains.txt"
+  echo ""
+  g "Domain enumeration complete."
+  echo "  Subdomains found: $(wc -l < "$dir/all-subdomains.txt" 2>/dev/null || echo 0)"
+  echo "  Results: $dir"
+}
+
+cmd_ad(){
+  local dc="${1:?usage: darknode-enum ad <dc_ip> [domain] [user:pass]}"
+  local domain="${2:-}"
+  local creds="${3:-}"
+  local dir="$OUT_DIR/ad-$dc-$(ts)"
+  mkdir -p "$dir"
+  LOGFILE="$dir/enum.log"
+
+  c "Active Directory Enumeration: $dc"
+  c "Output: $dir"
+  echo ""
+
+  _run "LDAP banner" nmap -sV -p 389,636,88,445 "$dc"
+  _run "SMB enumeration" enum4linux -a "$dc"
+  _run "NetBIOS scan" nbtscan "$dc"
+
+  if [ -n "$creds" ] && has crackmapexec; then
+    local user=$(echo "$creds" | cut -d: -f1)
+    local pass=$(echo "$creds" | cut -d: -f2-)
+    c "  [run] CrackMapExec enumeration (authenticated)"
+    crackmapexec smb "$dc" -u "$user" -p "$pass" --users 2>&1 | tee "$dir/cme-users.txt" | tee -a "$LOGFILE" || true
+    crackmapexec smb "$dc" -u "$user" -p "$pass" --groups 2>&1 | tee "$dir/cme-groups.txt" | tee -a "$LOGFILE" || true
+    crackmapexec smb "$dc" -u "$user" -p "$pass" --shares 2>&1 | tee "$dir/cme-shares.txt" | tee -a "$LOGFILE" || true
+    crackmapexec smb "$dc" -u "$user" -p "$pass" --pass-pol 2>&1 | tee "$dir/cme-passpol.txt" | tee -a "$LOGFILE" || true
+  else
+    y "  Tip: authenticated enum reveals much more:"
+    echo "    darknode-enum ad $dc domain.local 'user:password'"
+  fi
+
+  echo ""
+  g "AD enumeration complete."
+  echo "  Results: $dir"
+}
+
+cmd_smb(){
+  local ip="${1:?usage: darknode-enum smb <ip>}"
+  local dir="$OUT_DIR/smb-$ip-$(ts)"
+  mkdir -p "$dir"
+  LOGFILE="$dir/enum.log"
+
+  c "SMB Enumeration: $ip"
+  echo ""
+  _run "Enum4linux" enum4linux -a "$ip"
+  _run "SMB shares (null session)" smbclient -L "//$ip" -N
+  _run "SMB version" nmap --script smb-protocols -p 445 "$ip"
+  _run "SMB vulns" nmap --script smb-vuln* -p 445 "$ip"
+  _run "NetBIOS" nbtscan "$ip"
+
+  echo ""
+  g "SMB enumeration complete."
+  echo "  Results: $dir"
+}
+
+cmd_full(){
+  local target="${1:?usage: darknode-enum full <target>}"
+  c "Full Enumeration: $target"
+  echo ""
+
+  # Detect target type
+  if echo "$target" | grep -qP '^\d+\.\d+\.\d+\.\d+'; then
+    cmd_network "$target"
+    # Check for web and SMB from results
+  elif echo "$target" | grep -qP '^https?://'; then
+    cmd_web "$target"
+  else
+    # Assume domain
+    cmd_domain "$target"
+    # Also try to resolve and scan
+    local ip=$(dig +short "$target" | head -1)
+    if [ -n "$ip" ]; then
+      echo ""
+      cmd_network "$ip"
+    fi
+  fi
+}
+
+case "${1:-help}" in
+  web)     shift; cmd_web "$@" ;;
+  network) shift; cmd_network "$@" ;;
+  domain)  shift; cmd_domain "$@" ;;
+  ad)      shift; cmd_ad "$@" ;;
+  smb)     shift; cmd_smb "$@" ;;
+  full)    shift; cmd_full "$@" ;;
+  *)
+    echo ""
+    echo "  darknode-enum — automated enumeration orchestrator"
+    echo ""
+    echo "    web <url>               Full web enumeration"
+    echo "    network <ip|cidr>       Full network enumeration"
+    echo "    domain <domain.com>     Full domain/OSINT enumeration"
+    echo "    ad <dc_ip> [dom] [u:p]  Active Directory enumeration"
+    echo "    smb <ip>                SMB-focused enumeration"
+    echo "    full <target>           Auto-detect and run everything"
+    echo ""
+    echo "  All results saved to: ~/.darknode/enum/"
+    echo ""
+    ;;
+esac

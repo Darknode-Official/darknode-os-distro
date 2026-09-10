@@ -1,9 +1,0 @@
-[Desktop Entry]
-Name=Sentinel Settings
-Comment=System and toolkit configuration
-Exec=sentinel-settings
-Icon=preferences-desktop
-Terminal=true
-Type=Application
-Categories=Settings;System;
-Keywords=settings;configuration;preferences;network;display;security;

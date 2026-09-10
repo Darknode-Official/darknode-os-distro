@@ -1,0 +1,600 @@
+#!/usr/bin/env bash
+# darknode-settings — system and Darknode configuration manager
+#
+# A unified settings app covering system configuration, Darknode toolkit
+# preferences, network, display, security, and about — modeled after
+# Ubuntu's Settings app but built for a hacking workstation.
+#
+#   darknode-settings                — launch interactive settings (GUI or TUI)
+#   darknode-settings network        — network settings
+#   darknode-settings display        — display and appearance
+#   darknode-settings sound          — audio settings
+#   darknode-settings power          — power management
+#   darknode-settings users          — user accounts
+#   darknode-settings security       — security and privacy
+#   darknode-settings darknode       — Darknode toolkit configuration
+#   darknode-settings updates        — software updates
+#   darknode-settings about          — system information
+#   darknode-settings reset          — reset Darknode to defaults
+set -uo pipefail
+
+DARKNODE_CONF="$HOME/.darknode/settings.conf"
+mkdir -p "$HOME/.darknode"
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+bold(){ printf '\e[1m%s\e[0m\n' "$*"; }
+hr(){ printf '\e[2m%s\e[0m\n' "$(printf '─%.0s' $(seq 1 60))"; }
+
+# Load saved settings
+_load_conf(){
+  [ -f "$DARKNODE_CONF" ] && source "$DARKNODE_CONF" 2>/dev/null
+}
+_save_conf(){
+  cat > "$DARKNODE_CONF" << CONF
+# Darknode OS Settings
+DARKNODE_THEME="${DARKNODE_THEME:-dark}"
+DARKNODE_ENGINE="${DARKNODE_ENGINE:-claude}"
+DARKNODE_PROXY_ENABLED="${DARKNODE_PROXY_ENABLED:-false}"
+DARKNODE_AUTO_UPDATE="${DARKNODE_AUTO_UPDATE:-true}"
+DARKNODE_TELEMETRY="${DARKNODE_TELEMETRY:-false}"
+DARKNODE_DEFAULT_SHELL="${DARKNODE_DEFAULT_SHELL:-bash}"
+DARKNODE_NOTIFICATIONS="${DARKNODE_NOTIFICATIONS:-true}"
+DARKNODE_SANDBOX_AUTONET="${DARKNODE_SANDBOX_AUTONET:-false}"
+DARKNODE_SCOPE_ENFORCE="${DARKNODE_SCOPE_ENFORCE:-true}"
+CONF
+}
+
+# Initialize defaults
+DARKNODE_THEME="${DARKNODE_THEME:-dark}"
+DARKNODE_ENGINE="${DARKNODE_ENGINE:-claude}"
+DARKNODE_PROXY_ENABLED="${DARKNODE_PROXY_ENABLED:-false}"
+DARKNODE_AUTO_UPDATE="${DARKNODE_AUTO_UPDATE:-true}"
+DARKNODE_TELEMETRY="${DARKNODE_TELEMETRY:-false}"
+DARKNODE_DEFAULT_SHELL="${DARKNODE_DEFAULT_SHELL:-bash}"
+DARKNODE_NOTIFICATIONS="${DARKNODE_NOTIFICATIONS:-true}"
+DARKNODE_SANDBOX_AUTONET="${DARKNODE_SANDBOX_AUTONET:-false}"
+DARKNODE_SCOPE_ENFORCE="${DARKNODE_SCOPE_ENFORCE:-true}"
+
+_load_conf
+
+# ---- Try GUI first, fall back to TUI ----
+_has_gui(){
+  [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
+}
+
+_has_dialog(){
+  command -v whiptail >/dev/null 2>&1 || command -v dialog >/dev/null 2>&1
+}
+
+_dialog(){
+  if command -v whiptail >/dev/null 2>&1; then
+    whiptail "$@" 3>&1 1>&2 2>&3
+  elif command -v dialog >/dev/null 2>&1; then
+    dialog "$@" 3>&1 1>&2 2>&3
+  else
+    return 1
+  fi
+}
+
+# ---- Network Settings ----
+cmd_network(){
+  echo ""
+  c "Network Settings"
+  hr
+
+  echo ""
+  bold "Current Configuration:"
+  echo "  Hostname:    $(hostname)"
+  echo "  DNS:         $(grep nameserver /etc/resolv.conf 2>/dev/null | head -3 | awk '{print $2}' | tr '\n' ', ' | sed 's/,$//')"
+  echo ""
+
+  bold "Interfaces:"
+  ip -br addr 2>/dev/null | while read -r iface state addrs; do
+    local color="\e[31m"
+    [ "$state" = "UP" ] && color="\e[32m"
+    printf "  %-16s ${color}%-8s\e[0m %s\n" "$iface" "$state" "$addrs"
+  done
+
+  echo ""
+  bold "Default Route:"
+  echo "  $(ip route | grep default | head -1)"
+
+  echo ""
+  bold "DNS Resolution:"
+  local dns_test=$(timeout 3 dig +short google.com 2>/dev/null | head -1)
+  [ -n "$dns_test" ] && g "  DNS working (google.com -> $dns_test)" || r "  DNS not resolving"
+
+  echo ""
+  bold "Public IP:"
+  local pub_ip=$(timeout 5 curl -s ifconfig.me 2>/dev/null)
+  [ -n "$pub_ip" ] && echo "  $pub_ip" || dim "  Could not determine (offline or blocked)"
+
+  echo ""
+  bold "Open Ports (listening):"
+  ss -tlnp 2>/dev/null | grep LISTEN | awk '{print "  " $4 " (" $6 ")"}' | sed 's/users:(("/  /; s/".*//; s/  //' | head -10
+
+  echo ""
+  bold "Proxy:"
+  if [ "$DARKNODE_PROXY_ENABLED" = "true" ]; then
+    g "  Proxy: ENABLED"
+    echo "  HTTP:  ${http_proxy:-not set}"
+    echo "  SOCKS: ${ALL_PROXY:-not set}"
+  else
+    echo "  Proxy: disabled"
+  fi
+
+  echo ""
+  dim "Change network: nmtui (TUI) or nm-connection-editor (GUI)"
+  dim "Change proxy: darknode-proxy"
+  dim "Change DNS: edit /etc/resolv.conf or use systemd-resolved"
+}
+
+# ---- Display Settings ----
+cmd_display(){
+  echo ""
+  c "Display & Appearance Settings"
+  hr
+
+  if _has_gui; then
+    echo ""
+    bold "Monitors:"
+    xrandr 2>/dev/null | grep " connected" | while read -r line; do
+      echo "  $line"
+    done
+
+    echo ""
+    bold "Resolution:"
+    xrandr 2>/dev/null | grep '\*' | awk '{print "  " $1 " " $2}'
+
+    echo ""
+    bold "Theme:"
+    echo "  GTK:  $(xfconf-query -c xsettings -p /Net/ThemeName 2>/dev/null || echo 'unknown')"
+    echo "  Icons: $(xfconf-query -c xsettings -p /Net/IconThemeName 2>/dev/null || echo 'unknown')"
+    echo "  Font: $(xfconf-query -c xsettings -p /Gtk/FontName 2>/dev/null || echo 'unknown')"
+
+    echo ""
+    bold "Wallpaper:"
+    local wp=$(xfconf-query -c xfce4-desktop -p /backdrop/screen0/monitorVirtual1/workspace0/last-image 2>/dev/null || echo 'unknown')
+    echo "  $(basename "$wp" 2>/dev/null || echo "$wp")"
+
+    echo ""
+    dim "Change display: xfce4-display-settings"
+    dim "Change theme: xfce4-appearance-settings"
+    dim "Change wallpaper: darknode-wallpaper"
+
+    echo ""
+    printf "  Open display settings? (y/n): "
+    read -r yn
+    [ "$yn" = "y" ] && xfce4-display-settings &>/dev/null &
+  else
+    echo "  No display server detected (headless/SSH session)."
+    echo "  Display settings require a GUI session."
+  fi
+}
+
+# ---- Sound Settings ----
+cmd_sound(){
+  echo ""
+  c "Sound Settings"
+  hr
+
+  if command -v pactl >/dev/null 2>&1; then
+    echo ""
+    bold "Audio Output:"
+    pactl list sinks short 2>/dev/null | while read -r idx name driver format state; do
+      local vol=$(pactl get-sink-volume "$idx" 2>/dev/null | grep -oP '\d+%' | head -1)
+      printf "  %-4s %-40s %s %s\n" "$idx" "$name" "${vol:-?}" "$state"
+    done
+
+    echo ""
+    bold "Volume:"
+    local vol=$(pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null | grep -oP '\d+%' | head -1)
+    local muted=$(pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | grep -oP 'yes|no')
+    echo "  Level: ${vol:-unknown}"
+    echo "  Muted: ${muted:-unknown}"
+
+    echo ""
+    dim "Adjust: pactl set-sink-volume @DEFAULT_SINK@ 50%"
+    dim "Mute: pactl set-sink-mute @DEFAULT_SINK@ toggle"
+    dim "GUI: pavucontrol"
+  else
+    echo "  PulseAudio not detected."
+    echo "  Install: apt install pulseaudio pavucontrol"
+  fi
+}
+
+# ---- Power Settings ----
+cmd_power(){
+  echo ""
+  c "Power Settings"
+  hr
+
+  echo ""
+  bold "Battery:"
+  if [ -d /sys/class/power_supply/BAT0 ]; then
+    local status=$(cat /sys/class/power_supply/BAT0/status 2>/dev/null)
+    local capacity=$(cat /sys/class/power_supply/BAT0/capacity 2>/dev/null)
+    echo "  Status: $status"
+    echo "  Level: ${capacity}%"
+  else
+    echo "  No battery detected (desktop/VM)"
+  fi
+
+  echo ""
+  bold "Uptime:"
+  echo "  $(uptime -p 2>/dev/null || uptime)"
+
+  echo ""
+  bold "CPU Governor:"
+  local gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "unknown")
+  echo "  $gov"
+
+  echo ""
+  bold "Screen Blank:"
+  local blank=$(xset q 2>/dev/null | grep "timeout" | head -1 | awk '{print $2}')
+  echo "  Timeout: ${blank:-unknown} seconds"
+
+  echo ""
+  dim "Power manager: xfce4-power-manager-settings"
+}
+
+# ---- User Accounts ----
+cmd_users(){
+  echo ""
+  c "Users & Accounts"
+  hr
+
+  echo ""
+  bold "Current User:"
+  echo "  Username: $(whoami)"
+  echo "  UID:      $(id -u)"
+  echo "  Groups:   $(groups)"
+  echo "  Home:     $HOME"
+  echo "  Shell:    $SHELL"
+
+  echo ""
+  bold "All Users (with login shell):"
+  awk -F: '$7 !~ /(nologin|false|sync|halt|shutdown)/ {printf "  %-16s UID=%-6s %s\n", $1, $3, $6}' /etc/passwd 2>/dev/null
+
+  echo ""
+  bold "Sudo Access:"
+  if sudo -n true 2>/dev/null; then
+    g "  You have sudo access"
+  else
+    echo "  Sudo requires password"
+  fi
+
+  echo ""
+  bold "Last Logins:"
+  last -n 5 2>/dev/null | head -5 | sed 's/^/  /'
+
+  echo ""
+  dim "Add user: sudo adduser <name>"
+  dim "Change password: passwd"
+  dim "Change shell: chsh -s /bin/zsh"
+}
+
+# ---- Security & Privacy ----
+cmd_security(){
+  echo ""
+  c "Security & Privacy"
+  hr
+
+  echo ""
+  bold "Firewall:"
+  if command -v ufw >/dev/null 2>&1; then
+    local ufw_status=$(sudo ufw status 2>/dev/null | head -1)
+    echo "  UFW: $ufw_status"
+  else
+    echo "  UFW: not installed"
+  fi
+  local ipt_rules=$(sudo iptables -S 2>/dev/null | wc -l)
+  echo "  iptables rules: $ipt_rules"
+
+  echo ""
+  bold "SSH:"
+  local ssh_root=$(grep "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
+  local ssh_pass=$(grep "^PasswordAuthentication" /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
+  echo "  Root login: ${ssh_root:-default}"
+  echo "  Password auth: ${ssh_pass:-default}"
+  echo "  Service: $(systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null || echo 'unknown')"
+
+  echo ""
+  bold "AppArmor/SELinux:"
+  if command -v aa-status >/dev/null 2>&1; then
+    local aa=$(sudo aa-status 2>/dev/null | head -1)
+    echo "  AppArmor: ${aa:-unknown}"
+  elif command -v getenforce >/dev/null 2>&1; then
+    echo "  SELinux: $(getenforce 2>/dev/null)"
+  else
+    echo "  Neither AppArmor nor SELinux detected"
+  fi
+
+  echo ""
+  bold "Auto-updates:"
+  if dpkg -l unattended-upgrades >/dev/null 2>&1; then
+    g "  Unattended upgrades: installed"
+  else
+    y "  Unattended upgrades: not installed"
+  fi
+
+  echo ""
+  bold "Darknode Security:"
+  echo "  Scope enforcement: $DARKNODE_SCOPE_ENFORCE"
+  echo "  Telemetry: $DARKNODE_TELEMETRY"
+  echo "  Sandbox auto-network: $DARKNODE_SANDBOX_AUTONET"
+
+  echo ""
+  dim "Harden: darknode-harden check"
+  dim "Firewall: sudo ufw enable"
+}
+
+# ---- Darknode Configuration ----
+cmd_darknode(){
+  echo ""
+  c "Darknode Toolkit Configuration"
+  hr
+
+  echo ""
+  bold "AI Engine:"
+  echo "  Default: $DARKNODE_ENGINE"
+  echo "  Available: claude, ollama, opencode"
+  printf "  Change? (claude/ollama/skip): "
+  read -r engine
+  if [ -n "$engine" ] && [ "$engine" != "skip" ]; then
+    DARKNODE_ENGINE="$engine"
+    echo "  Set to: $DARKNODE_ENGINE"
+  fi
+
+  echo ""
+  bold "Theme:"
+  echo "  Current: $DARKNODE_THEME"
+  printf "  Change? (dark/light/skip): "
+  read -r theme
+  if [ -n "$theme" ] && [ "$theme" != "skip" ]; then
+    DARKNODE_THEME="$theme"
+    echo "  Set to: $DARKNODE_THEME"
+  fi
+
+  echo ""
+  bold "Default Shell:"
+  echo "  Current: $DARKNODE_DEFAULT_SHELL"
+  printf "  Change? (bash/zsh/fish/skip): "
+  read -r sh
+  if [ -n "$sh" ] && [ "$sh" != "skip" ]; then
+    DARKNODE_DEFAULT_SHELL="$sh"
+    echo "  Set to: $DARKNODE_DEFAULT_SHELL"
+  fi
+
+  echo ""
+  bold "Scope Enforcement:"
+  echo "  Current: $DARKNODE_SCOPE_ENFORCE (prevents attacking out-of-scope targets)"
+  printf "  Toggle? (y/n): "
+  read -r tog
+  if [ "$tog" = "y" ]; then
+    [ "$DARKNODE_SCOPE_ENFORCE" = "true" ] && DARKNODE_SCOPE_ENFORCE="false" || DARKNODE_SCOPE_ENFORCE="true"
+    echo "  Set to: $DARKNODE_SCOPE_ENFORCE"
+  fi
+
+  echo ""
+  bold "Notifications:"
+  echo "  Current: $DARKNODE_NOTIFICATIONS"
+  printf "  Toggle? (y/n): "
+  read -r tog
+  if [ "$tog" = "y" ]; then
+    [ "$DARKNODE_NOTIFICATIONS" = "true" ] && DARKNODE_NOTIFICATIONS="false" || DARKNODE_NOTIFICATIONS="true"
+    echo "  Set to: $DARKNODE_NOTIFICATIONS"
+  fi
+
+  _save_conf
+  g "Settings saved to $DARKNODE_CONF"
+}
+
+# ---- Software Updates ----
+cmd_updates(){
+  echo ""
+  c "Software Updates"
+  hr
+
+  echo ""
+  bold "System:"
+  echo "  OS: $(lsb_release -d 2>/dev/null | cut -f2 || cat /etc/os-release 2>/dev/null | grep PRETTY | cut -d= -f2 | tr -d '"')"
+  echo "  Kernel: $(uname -r)"
+  echo "  Packages: $(dpkg -l 2>/dev/null | grep -c '^ii')"
+
+  echo ""
+  bold "Checking for updates..."
+  local updates=$(apt list --upgradable 2>/dev/null | grep -c upgradable)
+  if [ "$updates" -gt 0 ]; then
+    y "  $updates packages can be upgraded"
+    printf "  Run update now? (y/n): "
+    read -r yn
+    if [ "$yn" = "y" ]; then
+      sudo apt update && sudo apt upgrade -y
+    fi
+  else
+    g "  System is up to date"
+  fi
+
+  echo ""
+  bold "Darknode Components:"
+  echo "  CLI: $(darknode --version 2>/dev/null || echo 'not installed')"
+  echo "  Toolkit: $(find /opt/darknode-os/toolkit -name 'darknode-*' -type f 2>/dev/null | wc -l) tools"
+
+  echo ""
+  bold "Security Updates:"
+  local sec_updates=$(apt list --upgradable 2>/dev/null | grep -ci security)
+  if [ "$sec_updates" -gt 0 ]; then
+    r "  $sec_updates security updates pending!"
+  else
+    g "  No pending security updates"
+  fi
+}
+
+# ---- About ----
+cmd_about(){
+  echo ""
+  c "About Darknode OS"
+  hr
+
+  echo ""
+  bold "System:"
+  echo "  OS:        Darknode OS (based on $(lsb_release -d 2>/dev/null | cut -f2 || cat /etc/os-release 2>/dev/null | grep PRETTY | cut -d= -f2 | tr -d '"'))"
+  echo "  Kernel:    $(uname -r)"
+  echo "  Arch:      $(uname -m)"
+  echo "  Hostname:  $(hostname)"
+
+  echo ""
+  bold "Hardware:"
+  echo "  CPU:       $(grep 'model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs)"
+  echo "  Cores:     $(nproc 2>/dev/null)"
+  echo "  RAM:       $(free -h 2>/dev/null | awk '/^Mem:/{print $2}')"
+  echo "  Disk:      $(df -h / 2>/dev/null | awk 'NR==2{print $2 " total, " $4 " free"}')"
+
+  echo ""
+  bold "Desktop:"
+  echo "  Session:   ${XDG_SESSION_TYPE:-unknown}"
+  echo "  Desktop:   ${XDG_CURRENT_DESKTOP:-${DESKTOP_SESSION:-unknown}}"
+  if _has_gui; then
+    echo "  Resolution: $(xrandr 2>/dev/null | grep '\*' | awk '{print $1}' | head -1)"
+  fi
+
+  echo ""
+  bold "Darknode Toolkit:"
+  local tool_count=$(find "$HOME/.local/bin" /opt/darknode-os/toolkit /usr/local/bin -name 'darknode-*' -type f 2>/dev/null | wc -l)
+  echo "  Tools:     $tool_count installed"
+  echo "  Engine:    $DARKNODE_ENGINE"
+  echo "  Config:    $DARKNODE_CONF"
+
+  echo ""
+  bold "Network:"
+  echo "  IP:        $(hostname -I 2>/dev/null | awk '{print $1}')"
+  echo "  Gateway:   $(ip route 2>/dev/null | awk '/default/{print $3}')"
+
+  echo ""
+  bold "Uptime:"
+  echo "  $(uptime -p 2>/dev/null || uptime)"
+
+  echo ""
+  dim "Darknode OS — the AI-powered hacking workstation"
+  dim "github.com/SpartanKing18/darknode-os"
+}
+
+# ---- Reset ----
+cmd_reset(){
+  echo ""
+  r "Reset Darknode to Defaults"
+  hr
+  echo ""
+  y "This will reset all Darknode toolkit settings to defaults."
+  y "System settings (network, users, etc.) are NOT affected."
+  echo ""
+  printf "  Type RESET to confirm: "
+  read -r confirm
+  if [ "$confirm" = "RESET" ]; then
+    rm -f "$DARKNODE_CONF"
+    rm -rf "$HOME/.darknode/sandbox/library"
+    DARKNODE_THEME="dark"
+    DARKNODE_ENGINE="claude"
+    DARKNODE_PROXY_ENABLED="false"
+    DARKNODE_AUTO_UPDATE="true"
+    DARKNODE_TELEMETRY="false"
+    DARKNODE_DEFAULT_SHELL="bash"
+    DARKNODE_NOTIFICATIONS="true"
+    DARKNODE_SANDBOX_AUTONET="false"
+    DARKNODE_SCOPE_ENFORCE="true"
+    _save_conf
+    g "Settings reset to defaults."
+  else
+    echo "Aborted."
+  fi
+}
+
+# ---- Interactive menu ----
+cmd_interactive(){
+  while true; do
+    echo ""
+    c "Darknode OS Settings"
+    hr
+    echo ""
+    echo "   1)  Network           IP, DNS, proxy, connections"
+    echo "   2)  Display           Resolution, theme, wallpaper"
+    echo "   3)  Sound             Volume, audio devices"
+    echo "   4)  Power             Battery, uptime, governor"
+    echo "   5)  Users             Accounts, groups, sudo"
+    echo "   6)  Security          Firewall, SSH, AppArmor"
+    echo "   7)  Darknode          Toolkit config, engine, scope"
+    echo "   8)  Updates           System and security updates"
+    echo "   9)  About             System info, hardware, version"
+    echo "  10)  Reset             Reset Darknode to defaults"
+    echo "   q)  Quit"
+    echo ""
+    printf "  Select (1-10 or q): "
+    read -r pick
+
+    case "$pick" in
+      1) cmd_network ;;
+      2) cmd_display ;;
+      3) cmd_sound ;;
+      4) cmd_power ;;
+      5) cmd_users ;;
+      6) cmd_security ;;
+      7) cmd_darknode ;;
+      8) cmd_updates ;;
+      9) cmd_about ;;
+      10) cmd_reset ;;
+      q|Q|quit|exit) echo ""; break ;;
+      *) r "Invalid selection." ;;
+    esac
+
+    echo ""
+    printf "  Press Enter to continue..."
+    read -r
+  done
+}
+
+# ---- Usage ----
+usage(){
+  cat << 'USAGE'
+
+  darknode-settings — Darknode OS configuration manager
+
+  Commands:
+    (none)            Interactive settings menu
+    network           Network configuration
+    display           Display and appearance
+    sound             Audio settings
+    power             Power management
+    users             User accounts
+    security          Security and privacy
+    darknode          Darknode toolkit configuration
+    updates           Software updates
+    about             System information
+    reset             Reset Darknode to defaults
+
+USAGE
+}
+
+# ---- Dispatch ----
+cmd="${1:-interactive}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  interactive|-i) cmd_interactive ;;
+  network)        cmd_network ;;
+  display)        cmd_display ;;
+  sound)          cmd_sound ;;
+  power)          cmd_power ;;
+  users)          cmd_users ;;
+  security)       cmd_security ;;
+  darknode)       cmd_darknode ;;
+  updates)        cmd_updates ;;
+  about)          cmd_about ;;
+  reset)          cmd_reset ;;
+  help|--help|-h) usage ;;
+  *)              r "Unknown: $cmd"; usage; exit 1 ;;
+esac

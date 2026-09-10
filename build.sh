@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Build Sentinel OS on the base OS of your choice. The Sentinel identity — desktop,
+# Build Darknode OS on the base OS of your choice. The Darknode identity — desktop,
 # curated toolset, local-AI layer, branding — is applied on first boot by cloud-init,
 # so any cloud-init + apt base can wear it.
 #
 #   ./build.sh                 # interactive OS picker  (the "settings" for the base OS)
 #   ./build.sh ubuntu          # or name it directly
 #   ./build.sh debian slim     # base + EDITION (netinstall | slim | full, default full)
-#   SENTINEL_BASE=debian SENTINEL_EDITION=netinstall ./build.sh
+#   DARKNODE_BASE=debian DARKNODE_EDITION=netinstall ./build.sh
 #
-# Editions (how much Sentinel ships — all self-provision on first boot):
+# Editions (how much Darknode ships — all self-provision on first boot):
 #   netinstall  terminal only, no desktop/UI — core CLI stack + Nexus + local AI (smallest, ~12G disk)
 #   slim        full XFCE desktop + Nexus + tools, minus Metasploit/SecLists/Docker/cockpit app (~20G)
 #   full        everything: desktop, cockpit app, Metasploit, SecLists, Exploit-DB, Docker (~30G)
@@ -18,10 +18,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-CONF="sentinel-os.conf"     # remembers your last choice — the persisted "setting"
+CONF="darknode-os.conf"     # remembers your last choice — the persisted "setting"
 
 # ── edition (how much ships) ─────────────────────────────────────────────────
-EDITION="${2:-${SENTINEL_EDITION:-}}"
+EDITION="${2:-${DARKNODE_EDITION:-}}"
 [ -z "$EDITION" ] && [ -f "$CONF" ] && EDITION="$(sed -n 's/^EDITION=//p' "$CONF" | head -1)"
 EDITION="$(echo "${EDITION:-full}" | tr 'A-Z' 'a-z')"
 case "$EDITION" in
@@ -47,12 +47,12 @@ ORDER=(debian ubuntu ubuntu22 kali)
 # OSes that CANNOT reuse this cloud-init/apt pipeline — shown so the picker is honest.
 declare -A UNSUPPORTED=(
   [windows]="Windows needs an autounattend.xml + PowerShell/winget provisioner and a licensed ISO — a separate build, not this one."
-  [fedora]="Fedora is dnf-based; the Sentinel provisioner is apt-only for now (a dnf port is future work)."
+  [fedora]="Fedora is dnf-based; the Darknode provisioner is apt-only for now (a dnf port is future work)."
   [arch]="Arch/BlackArch is pacman-based; needs a pacman port of the provisioner."
 )
 
 pick_menu(){
-  echo "== Choose the base OS for Sentinel ==" >&2
+  echo "== Choose the base OS for Darknode ==" >&2
   local i=1; for k in "${ORDER[@]}"; do printf "  %d) %-22s %s\n" "$i" "${OS_NAME[$k]}" "${OS_NOTE[$k]}" >&2; i=$((i+1)); done
   printf "  --  not via this pipeline: %s\n" "${!UNSUPPORTED[*]}" >&2
   local ans; read -rp "OS [1-${#ORDER[@]}, default 1]: " ans </dev/tty || ans=1
@@ -62,7 +62,7 @@ pick_menu(){
 }
 
 # ── resolve the chosen base ──────────────────────────────────────────────────
-BASE="${1:-${SENTINEL_BASE:-}}"
+BASE="${1:-${DARKNODE_BASE:-}}"
 [ -z "$BASE" ] && [ -f "$CONF" ] && BASE="$(sed -n 's/^BASE_OS=//p' "$CONF" | head -1)"
 if [ -z "$BASE" ]; then BASE="$(pick_menu)"; fi
 BASE="$(echo "$BASE" | tr 'A-Z' 'a-z')"
@@ -76,10 +76,10 @@ fi
 
 FAMILY="${OS_FAMILY[$BASE]}"; DIR="${OS_DIR[$BASE]}"; FILE_RE="${OS_FILE[$BASE]}"
 BASE_IMG="base-${BASE}.qcow2"
-DISK="sentinel-os-${BASE}-${EDITION}.qcow2"      # per base+edition — no stale-disk reuse
+DISK="darknode-os-${BASE}-${EDITION}.qcow2"      # per base+edition — no stale-disk reuse
 SEED="seed-${BASE}-${EDITION}.iso"
 { echo "BASE_OS=$BASE"; echo "EDITION=$EDITION"; } > "$CONF"   # persist the settings
-echo "== Sentinel OS build  ·  base: ${OS_NAME[$BASE]}  ($FAMILY family)  ·  edition: $EDITION =="
+echo "== Darknode OS build  ·  base: ${OS_NAME[$BASE]}  ($FAMILY family)  ·  edition: $EDITION =="
 
 need(){ command -v "$1" >/dev/null 2>&1; }
 for t in qemu-img xorriso curl openssl; do
@@ -108,12 +108,12 @@ fi
 # 3) cloud-init seed. Stamp the chosen family into user-data so the provisioner
 #    adapts (kernel package, repo components) per distro.
 echo "-- building cloud-init seed (family: $FAMILY) ..."
-HASH="$(openssl passwd -6 sentinel)"
+HASH="$(openssl passwd -6 darknode)"
 rm -rf .seed && mkdir -p .seed
 cp cloud-init/meta-data .seed/meta-data
 sed -e "s#^    passwd: .*#    passwd: \"${HASH//#/\\#}\"#" \
-    -e "s#@@SENTINEL_FAMILY@@#${FAMILY}#g" \
-    -e "s#@@SENTINEL_EDITION@@#${EDITION}#g" \
+    -e "s#@@DARKNODE_FAMILY@@#${FAMILY}#g" \
+    -e "s#@@DARKNODE_EDITION@@#${EDITION}#g" \
     cloud-init/user-data > .seed/user-data
 ( cd .seed && xorriso -as mkisofs -quiet -output "../$SEED" -volid CIDATA -joliet -rock user-data meta-data )
 rm -rf .seed
@@ -123,5 +123,5 @@ echo "== done  ·  ${OS_NAME[$BASE]}  ·  $EDITION edition =="
 echo "  disk:  $(pwd)/$DISK"
 echo "  seed:  $(pwd)/$SEED"
 echo "  next:  ./launch.sh   (QEMU+KVM)   or   ./export-vbox.sh (VirtualBox)   — both use your last build ($BASE/$EDITION)"
-echo "  login: sentinel / sentinel   ($([ "$EDITION" = netinstall ] && echo 'terminal only — boots to a console' || echo 'first boot installs the Sentinel desktop + tools'))"
+echo "  login: darknode / darknode   ($([ "$EDITION" = netinstall ] && echo 'terminal only — boots to a console' || echo 'first boot installs the Darknode desktop + tools'))"
 echo "  other editions:  ./build.sh $BASE {netinstall|slim|full}"

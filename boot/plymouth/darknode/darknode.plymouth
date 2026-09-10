@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Darknode OS
+Description=Darknode OS boot splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/darknode
+ScriptFile=/usr/share/plymouth/themes/darknode/darknode.script

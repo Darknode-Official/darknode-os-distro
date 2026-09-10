@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=Reverse Engineering
-Comment=Binary analysis, disassembly, hex dump
-Exec=xfce4-terminal --title="Reverse Engineering" -e sentinel-re
-Icon=applications-development
-Terminal=false
-Type=Application
-Categories=System;Security;

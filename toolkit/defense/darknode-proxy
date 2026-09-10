@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# darknode-proxy — manage proxy chains for anonymous operations
+#   darknode-proxy tor             — route all traffic through Tor
+#   darknode-proxy tor stop        — stop Tor routing
+#   darknode-proxy chain add <proxy> — add a SOCKS/HTTP proxy to the chain
+#   darknode-proxy chain list      — list the current proxy chain
+#   darknode-proxy chain clear     — reset the proxy chain
+#   darknode-proxy check           — verify anonymity (check external IP)
+#   darknode-proxy dns             — configure DNS over Tor
+set -uo pipefail
+
+CONF="/etc/proxychains4.conf"
+BACKUP="$HOME/.darknode/proxy/proxychains.backup"
+CHAIN_FILE="$HOME/.darknode/proxy/chain.conf"
+mkdir -p "$HOME/.darknode/proxy"
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+
+cmd_tor(){
+  local action="${1:-start}"
+  case "$action" in
+    start)
+      c "Starting Tor..."
+      sudo systemctl start tor 2>/dev/null || { sudo tor &>/dev/null & sleep 3; }
+      # Verify Tor is running
+      if ss -tlnp 2>/dev/null | grep -q ":9050 "; then
+        g "Tor is running on port 9050."
+        echo ""
+        echo "  Route traffic through Tor:"
+        echo "    proxychains4 curl https://check.torproject.org"
+        echo "    torsocks curl https://check.torproject.org"
+        echo "    darknode-proxy check"
+        echo ""
+        echo "  Or set your browser proxy to SOCKS5 127.0.0.1:9050"
+      else
+        r "Tor failed to start. Install: sudo apt-get install tor"
+      fi
+      ;;
+    stop)
+      c "Stopping Tor..."
+      sudo systemctl stop tor 2>/dev/null || sudo killall tor 2>/dev/null
+      g "Tor stopped."
+      ;;
+    *)
+      echo "  Usage: darknode-proxy tor [start|stop]"
+      ;;
+  esac
+}
+
+cmd_chain(){
+  local action="${1:-list}"
+  shift 2>/dev/null || true
+  case "$action" in
+    add)
+      local proxy="${1:?usage: darknode-proxy chain add <type> <host> <port>}"
+      local host="${2:-}"
+      local port="${3:-}"
+      if [ -n "$host" ] && [ -n "$port" ]; then
+        echo "$proxy $host $port" >> "$CHAIN_FILE"
+        g "Added: $proxy $host $port"
+      else
+        # Parse as single string: socks5://host:port or host:port
+        local parsed=$(echo "$proxy" | sed 's|socks5://||;s|socks4://||;s|http://||;s|https://||')
+        local h=$(echo "$parsed" | cut -d: -f1)
+        local p=$(echo "$parsed" | cut -d: -f2)
+        local type="socks5"
+        echo "$proxy" | grep -q "socks4" && type="socks4"
+        echo "$proxy" | grep -q "http" && type="http"
+        echo "$type $h $p" >> "$CHAIN_FILE"
+        g "Added: $type $h $p"
+      fi
+      echo "  Chain now has $(wc -l < "$CHAIN_FILE" 2>/dev/null || echo 0) proxies."
+      echo "  Apply with: darknode-proxy chain apply"
+      ;;
+    list)
+      c "Current proxy chain:"
+      echo ""
+      if [ -f "$CHAIN_FILE" ] && [ -s "$CHAIN_FILE" ]; then
+        cat -n "$CHAIN_FILE"
+      else
+        echo "  (empty — using default: Tor on 127.0.0.1:9050)"
+      fi
+      echo ""
+      ;;
+    clear)
+      > "$CHAIN_FILE" 2>/dev/null
+      g "Proxy chain cleared."
+      ;;
+    apply)
+      if [ ! -f "$CHAIN_FILE" ] || [ ! -s "$CHAIN_FILE" ]; then
+        y "Chain is empty. Add proxies first: darknode-proxy chain add socks5://host:port"
+        return 1
+      fi
+      # Backup original
+      [ -f "$CONF" ] && cp "$CONF" "$BACKUP" 2>/dev/null
+      # Build new proxychains config
+      sudo tee "$CONF" >/dev/null << 'PCEOF'
+strict_chain
+proxy_dns
+tcp_read_time_out 15000
+tcp_connect_time_out 8000
+
+[ProxyList]
+PCEOF
+      sudo tee -a "$CONF" < "$CHAIN_FILE" >/dev/null
+      g "Applied $(wc -l < "$CHAIN_FILE") proxies to $CONF"
+      echo "  Test: proxychains4 curl -s https://ifconfig.me"
+      ;;
+    *)
+      echo "  Usage: darknode-proxy chain [add|list|clear|apply]"
+      ;;
+  esac
+}
+
+cmd_check(){
+  c "Checking anonymity..."
+  echo ""
+
+  echo "  Direct IP:"
+  local direct=$(curl -s --max-time 10 https://ifconfig.me 2>/dev/null || echo "failed")
+  echo "    $direct"
+  echo ""
+
+  echo "  Via Tor:"
+  local tor_ip=$(torsocks curl -s --max-time 15 https://ifconfig.me 2>/dev/null || echo "failed")
+  echo "    $tor_ip"
+  echo ""
+
+  echo "  Via proxychains:"
+  local proxy_ip=$(proxychains4 -q curl -s --max-time 15 https://ifconfig.me 2>/dev/null || echo "failed")
+  echo "    $proxy_ip"
+  echo ""
+
+  if [ "$direct" != "$tor_ip" ] && [ "$tor_ip" != "failed" ]; then
+    g "Tor is working — your IP is masked."
+  elif [ "$tor_ip" = "failed" ]; then
+    y "Tor check failed. Is Tor running? (darknode-proxy tor start)"
+  else
+    r "WARNING: Tor IP matches direct IP — NOT anonymous!"
+  fi
+
+  echo ""
+  echo "  Tor check page:"
+  torsocks curl -s https://check.torproject.org/api/ip 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(f'    IsTor: {d.get(\"IsTor\")}, IP: {d.get(\"IP\")}')" 2>/dev/null || echo "    (check failed)"
+}
+
+cmd_dns(){
+  c "Configuring DNS over Tor..."
+  echo "  This routes DNS through Tor to prevent DNS leaks."
+  echo ""
+  echo "  Option 1: proxychains4 handles DNS (proxy_dns in config)"
+  grep -q "proxy_dns" "$CONF" 2>/dev/null && g "    Already enabled in proxychains4.conf" || y "    Not enabled — add 'proxy_dns' to $CONF"
+  echo ""
+  echo "  Option 2: Use Tor's DNS port (9053)"
+  echo "    echo 'nameserver 127.0.0.1' | sudo tee /etc/resolv.conf"
+  echo "    sudo iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports 9053"
+}
+
+case "${1:-help}" in
+  tor)     shift; cmd_tor "$@" ;;
+  chain)   shift; cmd_chain "$@" ;;
+  check)   cmd_check ;;
+  dns)     cmd_dns ;;
+  *)
+    echo ""
+    echo "  darknode-proxy — anonymous operations proxy manager"
+    echo ""
+    echo "    tor [start|stop]     Manage Tor service"
+    echo "    chain add <proxy>    Add proxy (socks5://host:port)"
+    echo "    chain list           List proxy chain"
+    echo "    chain clear          Reset chain"
+    echo "    chain apply          Apply chain to proxychains4"
+    echo "    check                Verify anonymity"
+    echo "    dns                  Configure DNS-over-Tor"
+    echo ""
+    ;;
+esac

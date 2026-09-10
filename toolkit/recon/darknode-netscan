@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# darknode-netscan — interactive network scanner with nmap presets
+set -uo pipefail
+SCAN_DIR="$HOME/.darknode/scans"
+mkdir -p "$SCAN_DIR"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+ts(){ date -u +%Y%m%d-%H%M%S; }
+_need(){ command -v nmap >/dev/null 2>&1 || { r "nmap not installed. apt install nmap"; exit 1; }; }
+
+cmd_quick(){
+  _need; local target="${1:?usage: darknode-netscan quick <target>}"
+  local out="$SCAN_DIR/quick-$(echo "$target" | tr '/:' '_')-$(ts)"
+  c "Quick scan: $target (top 1000 ports, service detection)..."
+  nmap -sV -sC --top-ports 1000 -oA "$out" "$target" 2>&1 | tee "${out}.txt"
+  g "Results saved: ${out}.*"
+  _summary "$out.nmap"
+}
+cmd_full(){
+  _need; local target="${1:?usage: darknode-netscan full <target>}"
+  local out="$SCAN_DIR/full-$(echo "$target" | tr '/:' '_')-$(ts)"
+  c "Full port scan: $target (all 65535 ports)..."
+  y "This may take several minutes."
+  nmap -sV -sC -p- -oA "$out" "$target" 2>&1 | tee "${out}.txt"
+  g "Results saved: ${out}.*"
+  _summary "$out.nmap"
+}
+cmd_vuln(){
+  _need; local target="${1:?usage: darknode-netscan vuln <target>}"
+  local out="$SCAN_DIR/vuln-$(echo "$target" | tr '/:' '_')-$(ts)"
+  c "Vulnerability scan: $target..."
+  nmap -sV --script=vuln -oA "$out" "$target" 2>&1 | tee "${out}.txt"
+  g "Results saved: ${out}.*"
+  _summary "$out.nmap"
+}
+cmd_stealth(){
+  _need; local target="${1:?usage: darknode-netscan stealth <target>}"
+  local out="$SCAN_DIR/stealth-$(echo "$target" | tr '/:' '_')-$(ts)"
+  c "Stealth scan: $target (SYN, fragmented, decoys)..."
+  nmap -sS -f -D RND:5 --data-length 24 -T2 -oA "$out" "$target" 2>&1 | tee "${out}.txt"
+  g "Results saved: ${out}.*"
+  _summary "$out.nmap"
+}
+cmd_os(){
+  _need; local target="${1:?usage: darknode-netscan os <target>}"
+  local out="$SCAN_DIR/os-$(echo "$target" | tr '/:' '_')-$(ts)"
+  c "OS detection: $target..."
+  nmap -O -sV -oA "$out" "$target" 2>&1 | tee "${out}.txt"
+  g "Results saved: ${out}.*"
+}
+cmd_udp(){
+  _need; local target="${1:?usage: darknode-netscan udp <target>}"
+  local out="$SCAN_DIR/udp-$(echo "$target" | tr '/:' '_')-$(ts)"
+  c "UDP scan: $target (top 100 UDP ports)..."
+  y "UDP scans are slow. Be patient."
+  sudo nmap -sU --top-ports 100 -sV -oA "$out" "$target" 2>&1 | tee "${out}.txt"
+  g "Results saved: ${out}.*"
+}
+cmd_results(){
+  c "Scan Results"
+  echo ""
+  if [ -d "$SCAN_DIR" ] && [ "$(ls -A "$SCAN_DIR" 2>/dev/null)" ]; then
+    ls -lt "$SCAN_DIR"/*.nmap 2>/dev/null | head -20 | while read -r line; do
+      echo "  $line"
+    done
+    echo ""
+    dim "View a result: cat $SCAN_DIR/<filename>"
+  else
+    dim "No scans yet. Run: darknode-netscan quick <target>"
+  fi
+}
+_summary(){
+  local f="$1"
+  [ -f "$f" ] || return
+  echo ""
+  c "=== Scan Summary ==="
+  local open=$(grep -c "open" "$f" 2>/dev/null || echo 0)
+  local filtered=$(grep -c "filtered" "$f" 2>/dev/null || echo 0)
+  echo "  Open ports: $open"
+  echo "  Filtered: $filtered"
+  grep "open" "$f" 2>/dev/null | head -15 | while read -r line; do
+    echo "  $line"
+  done
+}
+usage(){
+  cat << 'EOF'
+
+  darknode-netscan — network scanner with nmap presets
+
+  Commands:
+    quick <target>    Top 1000 ports + service detection
+    full <target>     All 65535 ports + service detection
+    vuln <target>     Vulnerability scan (--script=vuln)
+    stealth <target>  SYN scan with fragmentation + decoys
+    os <target>       OS detection + service versions
+    udp <target>      Top 100 UDP ports (needs sudo)
+    results           List saved scan results
+
+  Results saved to: ~/.darknode/scans/
+
+EOF
+}
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  quick)   cmd_quick "$@" ;;
+  full)    cmd_full "$@" ;;
+  vuln)    cmd_vuln "$@" ;;
+  stealth) cmd_stealth "$@" ;;
+  os)      cmd_os "$@" ;;
+  udp)     cmd_udp "$@" ;;
+  results) cmd_results ;;
+  help|--help|-h) usage ;;
+  *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac

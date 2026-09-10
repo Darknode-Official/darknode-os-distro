@@ -1,4 +1,4 @@
-# Sentinel OS GRUB Theme
+# Darknode OS GRUB Theme
 title-text: ""
 desktop-color: "#050709"
 terminal-font: "Unifont Regular 16"
@@ -26,7 +26,7 @@ terminal-height: "100%"
     align = "center"
     color = "#00eaff"
     font = "Unifont Regular 20"
-    text = ">_ SENTINEL OS"
+    text = ">_ DARKNODE OS"
 }
 
 + label {
