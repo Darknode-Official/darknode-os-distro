@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# darknode-canary — deploy honeytokens and canary files
+
+CAN_DIR="$HOME/.darknode/canaries"
+mkdir -p "$CAN_DIR"
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+ts(){ date -u '+%Y-%m-%d %H:%M:%S UTC'; }
+
+_register(){
+  local type="$1" path="$2" desc="$3"
+  echo "$(ts)|$type|$path|$desc" >> "$CAN_DIR/registry.txt"
+}
+
+cmd_deploy_file(){
+  local path="${1:?usage: darknode-canary deploy-file <path>}"
+  local dir; dir=$(dirname "$path")
+  [ -d "$dir" ] || mkdir -p "$dir"
+
+  c "Deploying canary file: $path"
+  cat > "$path" << 'CANARY'
+=== CONFIDENTIAL - DO NOT DISTRIBUTE ===
+IT Infrastructure Credentials
+Last updated: 2024-03-15
+
+Production Database:
+  Host: db-prod-01.internal.corp
+  User: svc_admin
+  Pass: Pr0d-DB-M@st3r-2024!
+
+VPN Gateway:
+  Server: vpn.corp.internal:1194
+  Admin: netadmin / VPN-Adm1n-K3y!
+
+AWS Root Account:
+  Access Key: AKIAIOSFODNN7EXAMPLE
+  Secret: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+Domain Admin:
+  User: corp\da_svc
+  Pass: D0m@in-Adm1n-2024!
+
+=== CANARY FILE - Access is monitored ===
+CANARY
+
+  # Set up monitoring via inotifywait if available
+  if command -v inotifywait >/dev/null 2>&1; then
+    local mon_script="$CAN_DIR/monitor_$(echo "$path" | md5sum | cut -c1-8).sh"
+    cat > "$mon_script" << MONITOR
+#!/bin/bash
+while inotifywait -q -e access,open "$path" 2>/dev/null; do
+  echo "[CANARY TRIGGERED] $(date -u) File accessed: $path" >> "$CAN_DIR/alerts.log"
+  command -v notify-send >/dev/null && notify-send -u critical "Canary Triggered" "File accessed: $path"
+done
+MONITOR
+    chmod +x "$mon_script"
+    nohup bash "$mon_script" >/dev/null 2>&1 &
+    dim "  Monitor PID: $!"
+  fi
+
+  _register "file" "$path" "Fake credentials file"
+  g "Canary file deployed: $path"
+  dim "Any access to this file indicates an intruder browsing for credentials."
+}
+
+cmd_deploy_cred(){
+  local user="${1:?usage: darknode-canary deploy-cred <user@domain> <password>}"
+  local pass="${2:?provide a fake password}"
+  c "Deploying credential canary: $user"
+
+  # Add to various places attackers check
+  # 1. Bash history
+  echo "ssh $user@192.168.1.100" >> ~/.bash_history 2>/dev/null
+  echo "mysql -u $user -p'$pass' production_db" >> ~/.bash_history 2>/dev/null
+
+  # 2. Environment (visible in /proc/self/environ)
+  echo "export CANARY_DB_PASS='$pass'" >> ~/.bashrc 2>/dev/null
+
+  # 3. Fake .env file
+  local env_file="$HOME/.env.production"
+  echo "DB_USER=$user" > "$env_file"
+  echo "DB_PASS=$pass" >> "$env_file"
+  echo "API_KEY=can-ary-tok-en-$(date +%s)" >> "$env_file"
+
+  _register "credential" "$user" "Fake credential planted in history/.env"
+  g "Credential canary deployed"
+  dim "  History entries added"
+  dim "  Fake .env.production created: $env_file"
+  dim "  If these credentials are used, the attacker found them via credential harvesting."
+}
+
+cmd_deploy_dns(){
+  local hostname="${1:?usage: darknode-canary deploy-dns <hostname>}"
+  c "DNS Canary: $hostname"
+  dim "To set up a DNS canary:"
+  echo "  1. Register the domain or use canarytokens.org"
+  echo "  2. Point the hostname to a monitoring server"
+  echo "  3. Any DNS resolution of $hostname = attacker enumerating DNS"
+  echo ""
+  echo "  Quick setup with /etc/hosts:"
+  echo "  echo '127.0.0.1 $hostname' >> /etc/hosts"
+  echo ""
+  echo "  Then monitor: tail -f /var/log/syslog | grep '$hostname'"
+  _register "dns" "$hostname" "DNS canary hostname"
+}
+
+cmd_deploy_token(){
+  local type="${1:?usage: darknode-canary deploy-token <aws|github|slack> [key]}"
+  local key="${2:-AKIA$(head -c 16 /dev/urandom | xxd -p | tr 'a-f' 'A-F' | head -c 16)}"
+  c "Token Canary: $type"
+
+  case "$type" in
+    aws)
+      local aws_dir="$HOME/.aws"
+      mkdir -p "$aws_dir"
+      cat > "$aws_dir/credentials.canary" << CREDS
+[canary]
+aws_access_key_id = $key
+aws_secret_access_key = $(head -c 30 /dev/urandom | base64 | head -c 40)
+CREDS
+      g "  AWS canary key planted: $aws_dir/credentials.canary"
+      dim "  If this key is used in any AWS API call, the attacker harvested stored credentials."
+      _register "token" "$key" "AWS canary access key"
+      ;;
+    github)
+      echo "ghp_$(head -c 30 /dev/urandom | base64 | tr -d '/+=' | head -c 36)" > "$HOME/.github_token.bak"
+      g "  GitHub canary token planted: ~/.github_token.bak"
+      _register "token" "github" "GitHub canary PAT"
+      ;;
+    slack)
+      echo "xoxb-$(head -c 40 /dev/urandom | xxd -p | head -c 50)" > "$HOME/.slack_token"
+      g "  Slack canary token planted: ~/.slack_token"
+      _register "token" "slack" "Slack canary token"
+      ;;
+  esac
+}
+
+cmd_status(){
+  c "Canary Status"
+  echo ""
+  if [ -f "$CAN_DIR/registry.txt" ]; then
+    printf "  %-22s %-12s %-30s %s\n" "DEPLOYED" "TYPE" "PATH" "DESCRIPTION"
+    printf "  %-22s %-12s %-30s %s\n" "---" "---" "---" "---"
+    while IFS='|' read -r ts type path desc; do
+      local alive="?"
+      [ -f "$path" ] && alive="active" || alive="gone"
+      printf "  %-22s %-12s %-30s %s\n" "$ts" "$type($alive)" "${path:0:30}" "$desc"
+    done < "$CAN_DIR/registry.txt"
+  else
+    dim "  No canaries deployed yet."
+  fi
+  echo ""
+  local monitors; monitors=$(pgrep -cf "inotifywait.*CANARY\|canary.*monitor" 2>/dev/null || echo 0)
+  dim "  Active monitors: $monitors"
+}
+
+cmd_alerts(){
+  c "Canary Alerts"
+  echo ""
+  if [ -f "$CAN_DIR/alerts.log" ] && [ -s "$CAN_DIR/alerts.log" ]; then
+    r "  TRIGGERED CANARIES:"
+    cat "$CAN_DIR/alerts.log" | sed 's/^/  /'
+  else
+    g "  No canaries have been triggered."
+  fi
+}
+
+usage(){ cat << 'U'
+
+  darknode-canary — deploy honeytokens and canary tripwires
+
+  Commands:
+    deploy-file <path>                Plant a fake credentials file
+    deploy-cred <user> <pass>         Plant fake credentials in history/.env
+    deploy-dns <hostname>             Set up a DNS canary
+    deploy-token <aws|github|slack>   Plant a fake API token
+    status                            Check all deployed canaries
+    alerts                            Show triggered canary alerts
+
+U
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  deploy-file) cmd_deploy_file "$@" ;; deploy-cred) cmd_deploy_cred "$@" ;;
+  deploy-dns) cmd_deploy_dns "$@" ;; deploy-token) cmd_deploy_token "$@" ;;
+  status) cmd_status ;; alerts) cmd_alerts ;; help|--help|-h) usage ;;
+  *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac

@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Build a categorized "Darknode" application menu from installed tools.
+set -uo pipefail
+APPS=/usr/share/applications; DIRS=/usr/share/desktop-directories
+mkdir -p "$APPS" "$DIRS" /etc/xdg/menus/applications-merged
+# category : tools (only launchers for installed binaries are emitted)
+declare -A CAT=(
+ [Recon]="nmap masscan dnsrecon whatweb theharvester subfinder httpx"
+ [Web]="nikto sqlmap gobuster ffuf wfuzz dirb wpscan"
+ [Passwords]="hydra john hashcat"
+ [Wireless]="aircrack-ng kismet"
+ [Exploitation]="msfconsole searchsploit"
+ [Forensics]="binwalk foremost sleuthkit"
+ [Sniffing]="wireshark ettercap tcpdump"
+)
+for c in "${!CAT[@]}"; do
+  cat > "$DIRS/darknode-${c,,}.directory" <<D
+[Desktop Entry]
+Type=Directory
+Name=Darknode $c
+Icon=applications-system
+D
+  for t in ${CAT[$c]}; do command -v "$t" >/dev/null || continue
+    cat > "$APPS/darknode-$t.desktop" <<A
+[Desktop Entry]
+Type=Application
+Name=$t
+Comment=$c tool
+Exec=xfce4-terminal --title=$t -e "bash -lc '$t --help 2>&1 | less || $t; exec bash'"
+Terminal=false
+Categories=X-Darknode-$c;
+A
+  done
+done
+
+# Darknode's own AI-powered & ops tools (open a terminal ready to use them)
+declare -A NATIVE=(
+ [darknode-agent]="fully-agentic autonomous recon → AI report"
+ [darknode-autonomy]="persistent mission engine — goals pursued on a schedule"
+ [darknode-harvest]="passive OSINT harvester (subdomains, mail, hosts)"
+ [darknode-watch]="monitor a target's attack surface for changes"
+ [darknode-cheat]="instant AI cheat sheet for any tool/technique"
+ [darknode-catch]="reverse-shell listener + PTY-upgrade helper"
+ [darknode-crack]="smart password-attack orchestrator (hash/service/archive)"
+ [darknode-pivot]="network pivot: SSH SOCKS proxy + port forwards"
+ [darknode-recon]="AI recon + prioritised next steps"
+ [darknode-triage]="fast AI target triage"
+ [darknode-engage]="engagement workspace + AI report"
+ [darknode-loot]="AI findings register from scan output"
+ [darknode-ask]="natural-language to command"
+ [darknode-scope]="authorization / in-scope guard"
+ [darknode-anon]="Tor anonymity + kill-switch"
+ [darknode-stealth]="stealth profile"
+ [darknode-lockout]="defensive lockdown"
+ [darknode-tweaks]="control center"
+ [darknode-wallpaper]="browse, set & rotate desktop backgrounds"
+)
+mkdir -p "$DIRS"
+cat > "$DIRS/darknode-ai.directory" <<D
+[Desktop Entry]
+Type=Directory
+Name=Darknode AI & Ops
+Icon=applications-system
+D
+for t in "${!NATIVE[@]}"; do command -v "$t" >/dev/null || continue
+  cat > "$APPS/$t.desktop" <<A
+[Desktop Entry]
+Type=Application
+Name=${t#darknode-}
+Comment=${NATIVE[$t]}
+Exec=xfce4-terminal --title=$t -e "bash -lc '$t; echo; exec bash'"
+Terminal=false
+Categories=X-Darknode-AI;
+A
+done
+cat > /etc/xdg/menus/applications-merged/darknode.menu <<'M'
+<!DOCTYPE Menu PUBLIC "-//freedesktop//DTD Menu 1.0//EN" "http://www.freedesktop.org/standards/menu-spec/menu-1.0.dtd">
+<Menu><Name>Applications</Name><Menu><Name>Darknode</Name><Directory>darknode.directory</Directory>
+M
+printf '<Menu><Name>AI &amp; Ops</Name><Directory>darknode-ai.directory</Directory><Include><Category>X-Darknode-AI</Category></Include></Menu>\n' >> /etc/xdg/menus/applications-merged/darknode.menu
+for c in "${!CAT[@]}"; do printf '<Menu><Name>%s</Name><Directory>darknode-%s.directory</Directory><Include><Category>X-Darknode-%s</Category></Include></Menu>\n' "$c" "${c,,}" "$c" >> /etc/xdg/menus/applications-merged/darknode.menu; done
+echo '</Menu></Menu>' >> /etc/xdg/menus/applications-merged/darknode.menu
+cat > "$DIRS/darknode.directory" <<D
+[Desktop Entry]
+Type=Directory
+Name=Darknode
+Icon=applications-system
+D
+update-desktop-database "$APPS" 2>/dev/null || true
+echo "[+] Darknode menu generated"

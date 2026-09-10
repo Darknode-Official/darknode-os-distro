@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=Report Generator
-Comment=Professional pentest report builder
-Exec=xfce4-terminal --title="Report Generator" -e sentinel-report
-Icon=x-office-document
-Terminal=false
-Type=Application
-Categories=System;Security;

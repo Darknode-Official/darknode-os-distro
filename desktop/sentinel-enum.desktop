@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=Auto Enumerator
-Comment=Automated target enumeration orchestrator
-Exec=xfce4-terminal --title="Enumerator" -e sentinel-enum
-Icon=edit-find
-Terminal=false
-Type=Application
-Categories=System;Security;

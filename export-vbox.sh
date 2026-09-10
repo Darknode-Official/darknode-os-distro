@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Convert the qcow2 to a VirtualBox VM so Sentinel OS runs in the VirtualBox GUI.
+# Convert the qcow2 to a VirtualBox VM so Darknode OS runs in the VirtualBox GUI.
 # Attaches the cloud-init seed as a DVD so first boot self-provisions.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 # which build to export (matches build.sh output names). Args: [edition] [base];
-# both default to the last build recorded in sentinel-os.conf.
-EDITION="${1:-${SENTINEL_EDITION:-}}"; BASE="${2:-${SENTINEL_BASE:-}}"
-[ -z "$EDITION" ] && [ -f sentinel-os.conf ] && EDITION="$(sed -n 's/^EDITION=//p' sentinel-os.conf | head -1)"
-[ -z "$BASE" ]    && [ -f sentinel-os.conf ] && BASE="$(sed -n 's/^BASE_OS=//p' sentinel-os.conf | head -1)"
+# both default to the last build recorded in darknode-os.conf.
+EDITION="${1:-${DARKNODE_EDITION:-}}"; BASE="${2:-${DARKNODE_BASE:-}}"
+[ -z "$EDITION" ] && [ -f darknode-os.conf ] && EDITION="$(sed -n 's/^EDITION=//p' darknode-os.conf | head -1)"
+[ -z "$BASE" ]    && [ -f darknode-os.conf ] && BASE="$(sed -n 's/^BASE_OS=//p' darknode-os.conf | head -1)"
 EDITION="$(echo "${EDITION:-full}" | tr 'A-Z' 'a-z')"; BASE="$(echo "${BASE:-debian}" | tr 'A-Z' 'a-z')"
-DISK="sentinel-os-${BASE}-${EDITION}.qcow2"
+DISK="darknode-os-${BASE}-${EDITION}.qcow2"
 SEED="seed-${BASE}-${EDITION}.iso"
-VDI="sentinel-os-${BASE}-${EDITION}.vdi"
-VM="Sentinel OS ($BASE/$EDITION)"
+VDI="darknode-os-${BASE}-${EDITION}.vdi"
+VM="Darknode OS ($BASE/$EDITION)"
 
 [ -f "$DISK" ] || { echo "no $DISK — run ./build.sh '$BASE $EDITION' first"; exit 1; }
 command -v VBoxManage >/dev/null || { echo "VirtualBox (VBoxManage) not found"; exit 1; }

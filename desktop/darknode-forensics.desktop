@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Forensics Workstation
+Comment=Disk imaging, memory analysis, timeline, artifacts
+Exec=xfce4-terminal --title="Forensics" -e darknode-forensics
+Icon=drive-harddisk
+Terminal=false
+Type=Application
+Categories=System;Security;

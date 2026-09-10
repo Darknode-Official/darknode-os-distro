@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# darknode-crypto — cryptography swiss-army knife
+# Hash, encrypt, decrypt, encode, decode, generate keys, crack hashes, inspect certs.
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+
+cmd_hash(){
+  local algo="${1:-sha256}"
+  local target="${2:?usage: darknode-crypto hash <algo> <file|string>}"
+  c "Hash ($algo)"
+  if [ -f "$target" ]; then
+    "${algo}sum" "$target" 2>/dev/null || openssl dgst -"$algo" "$target" 2>/dev/null
+  else
+    echo -n "$target" | "${algo}sum" 2>/dev/null || echo -n "$target" | openssl dgst -"$algo" 2>/dev/null
+  fi
+}
+
+cmd_hash_all(){
+  local target="${1:?usage: darknode-crypto hash-all <file|string>}"
+  c "All Hashes"
+  for algo in md5 sha1 sha256 sha512; do
+    if [ -f "$target" ]; then
+      printf "  %-8s %s\n" "$algo:" "$("${algo}sum" "$target" 2>/dev/null | awk '{print $1}')"
+    else
+      printf "  %-8s %s\n" "$algo:" "$(echo -n "$target" | "${algo}sum" 2>/dev/null | awk '{print $1}')"
+    fi
+  done
+}
+
+cmd_encrypt(){
+  local algo="${1:-aes-256-cbc}"
+  local file="${2:?usage: darknode-crypto encrypt <algo> <file>}"
+  local out="${file}.enc"
+  c "Encrypting $file with $algo..."
+  openssl enc -"$algo" -salt -pbkdf2 -in "$file" -out "$out" 2>&1
+  if [ $? -eq 0 ]; then
+    g "Encrypted: $out ($(wc -c < "$out") bytes)"
+  else
+    r "Encryption failed."
+  fi
+}
+
+cmd_decrypt(){
+  local algo="${1:-aes-256-cbc}"
+  local file="${2:?usage: darknode-crypto decrypt <algo> <file.enc>}"
+  local out="${file%.enc}"
+  [ "$out" = "$file" ] && out="${file}.dec"
+  c "Decrypting $file with $algo..."
+  openssl enc -d -"$algo" -pbkdf2 -in "$file" -out "$out" 2>&1
+  if [ $? -eq 0 ]; then
+    g "Decrypted: $out ($(wc -c < "$out") bytes)"
+  else
+    r "Decryption failed (wrong password or algorithm?)."
+  fi
+}
+
+cmd_encode(){
+  local method="${1:-base64}"
+  local data="${2:?usage: darknode-crypto encode <base64|hex|url|rot13> <data>}"
+  c "Encode ($method)"
+  case "$method" in
+    base64|b64)  echo -n "$data" | base64 ;;
+    hex)         echo -n "$data" | xxd -p ;;
+    url)         python3 -c "import urllib.parse; print(urllib.parse.quote('$data'))" 2>/dev/null ;;
+    rot13)       echo "$data" | tr 'A-Za-z' 'N-ZA-Mn-za-m' ;;
+    binary|bin)  echo -n "$data" | xxd -b | awk '{for(i=2;i<=7;i++)printf $i" "; print ""}' ;;
+    *)           r "Unknown: $method. Use: base64, hex, url, rot13, binary" ;;
+  esac
+}
+
+cmd_decode(){
+  local method="${1:-base64}"
+  local data="${2:?usage: darknode-crypto decode <base64|hex|url|rot13> <data>}"
+  c "Decode ($method)"
+  case "$method" in
+    base64|b64)  echo "$data" | base64 -d 2>/dev/null ;;
+    hex)         echo "$data" | xxd -r -p ;;
+    url)         python3 -c "import urllib.parse; print(urllib.parse.unquote('$data'))" 2>/dev/null ;;
+    rot13)       echo "$data" | tr 'A-Za-z' 'N-ZA-Mn-za-m' ;;
+    *)           r "Unknown: $method. Use: base64, hex, url, rot13" ;;
+  esac
+  echo ""
+}
+
+cmd_generate_key(){
+  local type="${1:-aes}"
+  local bits="${2:-256}"
+  c "Generate Key ($type, $bits bits)"
+  case "$type" in
+    aes|symmetric)
+      echo "  Key: $(openssl rand -hex $((bits/8)) 2>/dev/null)"
+      ;;
+    rsa)
+      local keyfile="rsa_${bits}.pem"
+      openssl genrsa -out "$keyfile" "$bits" 2>/dev/null
+      openssl rsa -in "$keyfile" -pubout -out "${keyfile%.pem}.pub" 2>/dev/null
+      g "  Private: $keyfile"
+      g "  Public:  ${keyfile%.pem}.pub"
+      ;;
+    ed25519|ssh)
+      ssh-keygen -t ed25519 -N "" -q -f "key_ed25519" -C "darknode-$(date +%s)"
+      g "  Private: key_ed25519"
+      g "  Public:  key_ed25519.pub"
+      ;;
+    random)
+      echo "  Hex:    $(openssl rand -hex $((bits/8)) 2>/dev/null)"
+      echo "  Base64: $(openssl rand -base64 $((bits/8)) 2>/dev/null)"
+      ;;
+    password)
+      echo "  Password: $(openssl rand -base64 "$bits" 2>/dev/null | head -c "$bits")"
+      ;;
+    *)
+      r "Unknown: $type. Use: aes, rsa, ed25519, random, password"
+      ;;
+  esac
+}
+
+cmd_identify(){
+  local hash="${1:?usage: darknode-crypto identify <hash>}"
+  c "Hash Identification"
+  local len=${#hash}
+  echo "  Length: $len characters"
+  echo ""
+  case "$len" in
+    32)  echo "  Possible: MD5, NTLM, MD4" ;;
+    40)  echo "  Possible: SHA-1, MySQL 4.x, RIPEMD-160" ;;
+    56)  echo "  Possible: SHA-224" ;;
+    64)  echo "  Possible: SHA-256, Keccak-256, BLAKE2s" ;;
+    96)  echo "  Possible: SHA-384" ;;
+    128) echo "  Possible: SHA-512, Whirlpool, BLAKE2b" ;;
+    *)   echo "  Unknown hash length." ;;
+  esac
+  [[ "$hash" == \$2*\$* ]] && echo "  Detected: bcrypt"
+  [[ "$hash" == \$6\$* ]] && echo "  Detected: SHA-512 crypt (Linux shadow)"
+  [[ "$hash" == \$5\$* ]] && echo "  Detected: SHA-256 crypt"
+  [[ "$hash" == \$1\$* ]] && echo "  Detected: MD5 crypt"
+  if command -v hashid >/dev/null 2>&1; then
+    echo ""
+    dim "hashid analysis:"
+    hashid "$hash" 2>/dev/null | head -5 | sed 's/^/  /'
+  fi
+}
+
+cmd_cert_info(){
+  local target="${1:?usage: darknode-crypto cert-info <domain>}"
+  c "Certificate Info: $target"
+  echo "" | openssl s_client -connect "$target:443" -servername "$target" 2>/dev/null | \
+    openssl x509 -noout -text 2>/dev/null | \
+    grep -E "Issuer:|Subject:|Not Before|Not After|DNS:" | sed 's/^/  /'
+}
+
+cmd_xor(){
+  local key="${1:?usage: darknode-crypto xor <key> <file>}"
+  local file="${2:?missing file}"
+  local out="${file}.xor"
+  c "XOR encrypt/decrypt (key: $key)"
+  python3 -c "
+import sys
+key = '$key'.encode()
+with open('$file', 'rb') as f:
+    data = f.read()
+result = bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+with open('$out', 'wb') as f:
+    f.write(result)
+print(f'Output: $out ({len(result)} bytes)')
+" 2>/dev/null
+}
+
+usage(){
+  cat << 'USAGE'
+
+  darknode-crypto — cryptography swiss army knife
+
+  Hashing:
+    hash <algo> <target>     Hash a file or string (md5/sha1/sha256/sha512)
+    hash-all <target>        All common hashes at once
+    identify <hash>          Identify hash type by length/format
+
+  Encryption:
+    encrypt <algo> <file>    Encrypt (aes-256-cbc default)
+    decrypt <algo> <file>    Decrypt
+    xor <key> <file>         XOR encrypt/decrypt
+
+  Encoding:
+    encode <method> <data>   Encode (base64/hex/url/rot13/binary)
+    decode <method> <data>   Decode
+
+  Keys:
+    generate-key <type> [bits]  Generate key (aes/rsa/ed25519/random/password)
+
+  Certificates:
+    cert-info <domain>       Show SSL certificate details
+
+USAGE
+}
+
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  hash)         cmd_hash "$@" ;;
+  hash-all)     cmd_hash_all "$@" ;;
+  encrypt)      cmd_encrypt "$@" ;;
+  decrypt)      cmd_decrypt "$@" ;;
+  encode)       cmd_encode "$@" ;;
+  decode)       cmd_decode "$@" ;;
+  generate-key) cmd_generate_key "$@" ;;
+  identify|id)  cmd_identify "$@" ;;
+  cert-info)    cmd_cert_info "$@" ;;
+  xor)          cmd_xor "$@" ;;
+  help|--help|-h) usage ;;
+  *)            r "Unknown: $cmd"; usage; exit 1 ;;
+esac

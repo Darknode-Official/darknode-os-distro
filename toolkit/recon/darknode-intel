@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# darknode-intel — threat-intelligence aggregator
+set -uo pipefail
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+
+cmd_cve(){
+  local cve="${1:?usage: darknode-intel cve <CVE-YYYY-NNNNN>}"
+  c "CVE Lookup: $cve"
+  echo ""
+  local data=$(curl -s "https://cveawg.mitre.org/api/cve/$cve" 2>/dev/null)
+  if echo "$data" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+cna=d.get('containers',{}).get('cna',{})
+print(f\"  ID:          {d.get('cveMetadata',{}).get('cveId','?')}\")
+print(f\"  State:       {d.get('cveMetadata',{}).get('state','?')}\")
+print(f\"  Published:   {d.get('cveMetadata',{}).get('datePublished','?')[:10]}\")
+descs=cna.get('descriptions',[])
+if descs: print(f\"  Description: {descs[0].get('value','?')[:200]}\")
+metrics=cna.get('metrics',[])
+for m in metrics:
+    cvss=m.get('cvssV3_1',m.get('cvssV3_0',{}))
+    if cvss: print(f\"  CVSS:        {cvss.get('baseScore','?')} ({cvss.get('baseSeverity','?')})\")
+affected=cna.get('affected',[])
+for a in affected[:3]:
+    print(f\"  Affected:    {a.get('vendor','?')} / {a.get('product','?')}\")
+refs=cna.get('references',[])
+for ref in refs[:5]:
+    print(f\"  Reference:   {ref.get('url','?')}\")
+" 2>/dev/null; then
+    echo ""
+    c "=== Exploit Search ==="
+    dim "  searchsploit $cve"
+    command -v searchsploit >/dev/null 2>&1 && searchsploit "$cve" 2>/dev/null | head -10
+  else
+    y "Could not fetch CVE data. Check the CVE ID format."
+  fi
+}
+
+cmd_search(){
+  local query="${*:?usage: darknode-intel search <keywords>}"
+  c "Searching for: $query"
+  echo ""
+  c "=== ExploitDB ==="
+  if command -v searchsploit >/dev/null 2>&1; then
+    searchsploit "$query" 2>/dev/null | head -20
+  else
+    dim "  searchsploit not installed"
+  fi
+  echo ""
+  c "=== NVD Search ==="
+  curl -s "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=$(echo "$query" | tr ' ' '+')" 2>/dev/null | \
+    python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+total=d.get('totalResults',0)
+print(f'  {total} CVEs found')
+for v in d.get('vulnerabilities',[])[:10]:
+    cve=v.get('cve',{})
+    cid=cve.get('id','?')
+    desc=cve.get('descriptions',[{}])[0].get('value','')[:80] if cve.get('descriptions') else ''
+    print(f'  {cid}  {desc}')
+" 2>/dev/null || dim "  NVD query failed"
+}
+
+cmd_exploit(){
+  local cve="${1:?usage: darknode-intel exploit <CVE-YYYY-NNNNN>}"
+  c "Exploit search: $cve"
+  echo ""
+  c "=== ExploitDB ==="
+  command -v searchsploit >/dev/null 2>&1 && searchsploit "$cve" 2>/dev/null || dim "  searchsploit not installed"
+  echo ""
+  c "=== GitHub PoCs ==="
+  curl -s "https://api.github.com/search/repositories?q=$cve+exploit&sort=stars&per_page=5" 2>/dev/null | \
+    python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for r in d.get('items',[])[:5]:
+    print(f\"  {r['full_name']:40s}  {r['stargazers_count']:>4d} stars  {r['html_url']}\")
+" 2>/dev/null || dim "  GitHub search failed"
+  echo ""
+  c "=== Metasploit ==="
+  if command -v msfconsole >/dev/null 2>&1; then
+    msfconsole -q -x "search $cve; exit" 2>/dev/null | grep -v "^$" | head -10
+  else
+    dim "  Metasploit not installed"
+  fi
+}
+
+cmd_ioc(){
+  local subcmd="${1:?usage: darknode-intel ioc check <ip|domain|hash>}"
+  shift
+  local value="${1:?usage: darknode-intel ioc check <value>}"
+  c "IOC Check: $value"
+  echo ""
+
+  # VirusTotal check
+  local vt_key="${VT_API_KEY:-}"
+  [ -z "$vt_key" ] && vt_key=$(cat "$HOME/.darknode/vt_api_key" 2>/dev/null || echo "")
+  if [ -n "$vt_key" ]; then
+    # Detect type
+    if [[ "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      c "  [VirusTotal] IP reputation..."
+      curl -s -H "x-apikey: $vt_key" "https://www.virustotal.com/api/v3/ip_addresses/$value" 2>/dev/null | \
+        python3 -c "import sys,json;d=json.load(sys.stdin).get('data',{}).get('attributes',{});s=d.get('last_analysis_stats',{});print(f\"    Malicious: {s.get('malicious',0)} | Suspicious: {s.get('suspicious',0)} | Clean: {s.get('harmless',0)}\")" 2>/dev/null
+    elif [[ "$value" =~ ^[a-fA-F0-9]{64}$ ]]; then
+      c "  [VirusTotal] Hash lookup..."
+      curl -s -H "x-apikey: $vt_key" "https://www.virustotal.com/api/v3/files/$value" 2>/dev/null | \
+        python3 -c "import sys,json;d=json.load(sys.stdin).get('data',{}).get('attributes',{});s=d.get('last_analysis_stats',{});print(f\"    Malicious: {s.get('malicious',0)} | Suspicious: {s.get('suspicious',0)} | Name: {d.get('meaningful_name','?')}\")" 2>/dev/null
+    else
+      c "  [VirusTotal] Domain lookup..."
+      curl -s -H "x-apikey: $vt_key" "https://www.virustotal.com/api/v3/domains/$value" 2>/dev/null | \
+        python3 -c "import sys,json;d=json.load(sys.stdin).get('data',{}).get('attributes',{});s=d.get('last_analysis_stats',{});print(f\"    Malicious: {s.get('malicious',0)} | Suspicious: {s.get('suspicious',0)} | Clean: {s.get('harmless',0)}\")" 2>/dev/null
+    fi
+  else
+    dim "  Set VT_API_KEY or save to ~/.darknode/vt_api_key for VirusTotal lookups"
+  fi
+
+  echo ""
+  c "  [AbuseIPDB] Check..."
+  curl -s "https://api.abuseipdb.com/api/v2/check?ipAddress=$value" \
+    -H "Key: ${ABUSEIPDB_KEY:-none}" -H "Accept: application/json" 2>/dev/null | \
+    python3 -c "import sys,json;d=json.load(sys.stdin).get('data',{});print(f\"    Confidence: {d.get('abuseConfidenceScore','?')}% | Reports: {d.get('totalReports','?')} | Country: {d.get('countryCode','?')}\")" 2>/dev/null || dim "  Set ABUSEIPDB_KEY for AbuseIPDB lookups"
+}
+
+cmd_mitre(){
+  local tid="${1:?usage: darknode-intel mitre <technique_id>}"
+  c "MITRE ATT&CK: $tid"
+  echo ""
+  dim "  View: https://attack.mitre.org/techniques/$tid/"
+  echo ""
+  curl -s "https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json" 2>/dev/null | \
+    python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for obj in d.get('objects',[]):
+    refs=obj.get('external_references',[])
+    for ref in refs:
+        if ref.get('external_id','').upper() == '$tid'.upper():
+            print(f\"  Name:        {obj.get('name','?')}\")
+            print(f\"  Type:        {obj.get('type','?')}\")
+            desc=obj.get('description','')[:300]
+            print(f\"  Description: {desc}\")
+            phases=obj.get('kill_chain_phases',[])
+            for p in phases:
+                print(f\"  Phase:       {p.get('phase_name','?')}\")
+            break
+" 2>/dev/null || dim "  MITRE data fetch failed"
+}
+
+cmd_feed(){
+  c "Threat Intelligence Feeds"
+  echo ""
+  c "=== Recent CVEs (NVD) ==="
+  curl -s "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=10" 2>/dev/null | \
+    python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for v in d.get('vulnerabilities',[])[:10]:
+    cve=v.get('cve',{})
+    cid=cve.get('id','?')
+    pub=cve.get('published','?')[:10]
+    desc=cve.get('descriptions',[{}])[0].get('value','')[:60] if cve.get('descriptions') else ''
+    print(f'  {cid}  {pub}  {desc}')
+" 2>/dev/null || dim "  NVD feed failed"
+
+  echo ""
+  c "=== MalwareBazaar Recent ==="
+  curl -s -X POST "https://mb-api.abuse.ch/api/v1/" -d "query=get_recent&selector=100" 2>/dev/null | \
+    python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for s in d.get('data',[])[:10]:
+    print(f\"  {s.get('sha256_hash','?')[:16]}..  {s.get('file_type','?'):12s}  {s.get('signature','?'):20s}  {s.get('first_seen','?')[:10]}\")
+" 2>/dev/null || dim "  MalwareBazaar feed failed"
+}
+
+usage(){
+  cat << 'EOF'
+
+  darknode-intel — threat intelligence aggregator
+
+  Commands:
+    cve <CVE-ID>       Lookup a CVE (details, CVSS, references)
+    search <keywords>  Search NVD and ExploitDB
+    exploit <CVE-ID>   Find exploits (ExploitDB, GitHub, Metasploit)
+    ioc check <value>  Check IP/domain/hash against threat databases
+    mitre <T-ID>       MITRE ATT&CK technique lookup
+    feed               Latest threat intel feeds (NVD, MalwareBazaar)
+
+  API keys (optional):
+    VT_API_KEY         VirusTotal (or save to ~/.darknode/vt_api_key)
+    ABUSEIPDB_KEY      AbuseIPDB
+
+EOF
+}
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  cve)     cmd_cve "$@" ;;
+  search)  cmd_search "$@" ;;
+  exploit) cmd_exploit "$@" ;;
+  ioc)     cmd_ioc "$@" ;;
+  mitre)   cmd_mitre "$@" ;;
+  feed)    cmd_feed ;;
+  help|--help|-h) usage ;;
+  *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac

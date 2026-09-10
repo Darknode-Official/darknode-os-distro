@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# darknode-update — keep Darknode OS and its toolkit up to date
+set -uo pipefail
+DIR="$HOME/.darknode/updates"; mkdir -p "$DIR"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+
+cmd_check(){
+  c "Checking for updates..."
+  echo ""
+  echo "  System packages:"
+  local upgradable=$(apt list --upgradable 2>/dev/null | grep -c upgradable)
+  [ "$upgradable" -gt 0 ] && y "    $upgradable packages can be upgraded" || g "    Up to date"
+  echo "  Darknode toolkit:"
+  if [ -d /opt/darknode-os/.git ]; then
+    cd /opt/darknode-os && git fetch origin 2>/dev/null
+    local behind=$(git rev-list HEAD..origin/main --count 2>/dev/null || echo "?")
+    [ "$behind" -gt 0 ] && y "    $behind commits behind" || g "    Up to date"
+  else
+    dim "    Not installed from git"
+  fi
+  echo "  Darknode CLI:"
+  if [ -d /opt/darknode-cli/.git ]; then
+    cd /opt/darknode-cli && git fetch origin 2>/dev/null
+    local behind=$(git rev-list HEAD..origin/main --count 2>/dev/null || echo "?")
+    [ "$behind" -gt 0 ] && y "    $behind commits behind" || g "    Up to date"
+  else
+    dim "    Not installed from git"
+  fi
+}
+
+cmd_system(){ c "Updating system packages..."; sudo apt update && sudo apt upgrade -y; echo "$(date -u) system" >> "$DIR/history.log"; g "Done."; }
+cmd_toolkit(){
+  c "Updating Darknode toolkit..."
+  if [ -d /opt/darknode-os/.git ]; then
+    cd /opt/darknode-os && sudo git pull --rebase
+    sudo find toolkit/ -name 'darknode-*' -type f -exec cp {} /usr/local/bin/ \; -exec chmod +x /usr/local/bin/{} \;
+    echo "$(date -u) toolkit" >> "$DIR/history.log"
+    g "  Toolkit updated. $(ls /usr/local/bin/darknode-* | wc -l) scripts installed."
+  else
+    r "  /opt/darknode-os not found."
+  fi
+}
+cmd_pip(){ c "Updating pip packages..."; pip3 list --outdated 2>/dev/null | tail -n +3 | awk '{print $1}' | xargs -r pip3 install -U 2>/dev/null; echo "$(date -u) pip" >> "$DIR/history.log"; g "Done."; }
+cmd_go(){
+  c "Updating Go tools..."
+  if command -v go >/dev/null 2>&1; then
+    for tool in gau waybackurls hakrawler katana gospider gowitness; do
+      go install "github.com/.../$tool@latest" 2>/dev/null && echo "  Updated: $tool" || dim "  Skip: $tool"
+    done
+    echo "$(date -u) go" >> "$DIR/history.log"
+  else
+    dim "  Go not installed."
+  fi
+}
+cmd_all(){ cmd_system; cmd_toolkit; cmd_pip; }
+cmd_status(){
+  c "Update History"
+  echo ""
+  if [ -f "$DIR/history.log" ]; then
+    tail -10 "$DIR/history.log" | sed 's/^/  /'
+  else
+    dim "  No updates recorded."
+  fi
+}
+
+usage(){ cat << 'U'
+  darknode-update — keep Darknode OS up to date
+
+  Commands:
+    check     Check for available updates
+    all       Update everything
+    system    apt update + upgrade
+    toolkit   Update darknode toolkit scripts
+    pip       Update pip packages
+    go        Update Go tools
+    status    Show update history
+U
+}
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  check) cmd_check ;; all) cmd_all ;; system) cmd_system ;; toolkit) cmd_toolkit ;;
+  pip) cmd_pip ;; go) cmd_go ;; status) cmd_status ;; help|--help|-h) usage ;;
+  *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac

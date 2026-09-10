@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=Payload Generator
-Comment=Generate reverse shells, bind shells, and web shells
-Exec=xfce4-terminal --title="Payload Generator" -e sentinel-payload
-Icon=package-x-generic
-Terminal=false
-Type=Application
-Categories=System;Security;

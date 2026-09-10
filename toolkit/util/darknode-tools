@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# darknode-tools — discover, search, and launch the Darknode custom toolkit
+#   darknode-tools               overview: tool counts by category
+#   darknode-tools list          list every Darknode tool with a one-line description
+#   darknode-tools <category>    list one category (recon exploit post defense util)
+#   darknode-tools search <q>    fuzzy-search names and descriptions
+#   darknode-tools info <tool>   show a tool's description + install status
+#   darknode-tools run <tool> …  run a tool by name (passes remaining args)
+set -uo pipefail
+
+c(){ printf '\e[1;36m%s\e[0m' "$*"; }
+g(){ printf '\e[32m%s\e[0m' "$*"; }
+r(){ printf '\e[31m%s\e[0m' "$*"; }
+y(){ printf '\e[33m%s\e[0m' "$*"; }
+dim(){ printf '\e[2m%s\e[0m' "$*"; }
+
+# Registry: name|category  (generated from the toolkit source tree)
+REG=(
+"darknode-ad|post-exploit"
+"darknode-agent|post-exploit"
+"darknode-ai|util"
+"darknode-anon|defense"
+"darknode-apifuzz|exploit"
+"darknode-arsenal|util"
+"darknode-ask|util"
+"darknode-attack-surface|recon"
+"darknode-autonomy|post-exploit"
+"darknode-baseline|defense"
+"darknode-breachcheck|recon"
+"darknode-brute|exploit"
+"darknode-c2|exploit"
+"darknode-canary|defense"
+"darknode-catch|defense"
+"darknode-chain|exploit"
+"darknode-cheat|util"
+"darknode-classify|defense"
+"darknode-cloud|recon"
+"darknode-collab|util"
+"darknode-crack|exploit"
+"darknode-crypto|util"
+"darknode-cvewatcher|recon"
+"darknode-darkweb|recon"
+"darknode-decoy|defense"
+"darknode-desktop-setup|util"
+"darknode-detonate|exploit"
+"darknode-dossier|recon"
+"darknode-engage|exploit"
+"darknode-engage-mgr|util"
+"darknode-enum|recon"
+"darknode-evidence|util"
+"darknode-exfil|post-exploit"
+"darknode-fingerprint|recon"
+"darknode-forensics|defense"
+"darknode-ghost-recon|recon"
+"darknode-greeting|util"
+"darknode-harden|defense"
+"darknode-harvest|recon"
+"darknode-implant|exploit"
+"darknode-incident|defense"
+"darknode-intel|recon"
+"darknode-iochunt|defense"
+"darknode-lab|util"
+"darknode-lockdown|defense"
+"darknode-lockout|defense"
+"darknode-loot|post-exploit"
+"darknode-macspoof|defense"
+"darknode-monitor|defense"
+"darknode-mutate|exploit"
+"darknode-netscan|recon"
+"darknode-opsec|util"
+"darknode-osint|recon"
+"darknode-payload|exploit"
+"darknode-persist|post-exploit"
+"darknode-phishanalyze|exploit"
+"darknode-phish|exploit"
+"darknode-pillage|post-exploit"
+"darknode-pivot-map|exploit"
+"darknode-pivot|post-exploit"
+"darknode-polyglot|exploit"
+"darknode-proxy|defense"
+"darknode-recon|recon"
+"darknode-relay|exploit"
+"darknode-report|util"
+"darknode-re|util"
+"darknode-sandbox|exploit"
+"darknode-scope|recon"
+"darknode-settings|util"
+"darknode-shell-upgrade|util"
+"darknode-sidechannel|recon"
+"darknode-soceng|exploit"
+"darknode-spray-smart|exploit"
+"darknode-stealth|defense"
+"darknode-stealth-score|defense"
+"darknode-threatfeed|recon"
+"darknode-timeline|util"
+"darknode-toolkit|util"
+"darknode-triage|util"
+"darknode-tripwire|defense"
+"darknode-tweaks|util"
+"darknode-update|util"
+"darknode-wafbypass|exploit"
+"darknode-wallpaper|util"
+"darknode-watch|recon"
+"darknode-webscan|recon"
+"darknode-wireless|exploit"
+)
+
+# Category slug -> display label and match aliases
+_catlabel(){ case "$1" in
+  recon) echo "Reconnaissance";;
+  exploit) echo "Exploitation";;
+  post-exploit) echo "Post-Exploitation";;
+  defense) echo "Defense & Blue-Team";;
+  util) echo "Utility & AI";;
+  *) echo "$1";; esac; }
+
+_catnorm(){ case "$1" in
+  recon|rec) echo recon;;
+  exploit|exp|exploitation) echo exploit;;
+  post|post-exploit|postexploit|pe) echo post-exploit;;
+  defense|def|defence|blue) echo defense;;
+  util|utility|ai|misc) echo util;;
+  *) echo "";; esac; }
+
+CATS=(recon exploit post-exploit defense util)
+
+# Read a tool's one-line description from its installed script header
+# "# name — desc" or "# name - desc"; falls back to first plain comment.
+_desc(){
+  local name="$1" path
+  path="$(command -v "$name" 2>/dev/null)" || path=""
+  [ -n "$path" ] && [ -r "$path" ] || { echo ""; return; }
+  local d
+  d=$(grep -m1 -E "^# *$name (—|-) " "$path" 2>/dev/null | sed -E "s/^# *$name (—|-) *//")
+  echo "$d"
+}
+
+_installed(){ command -v "$1" >/dev/null 2>&1; }
+
+cmd_overview(){
+  echo ""
+  c "  Darknode Toolkit"; printf '\n'
+  dim "  Custom AI-orchestrated security tools — try 'darknode-tools list'"; printf '\n\n'
+  local total=0 present=0
+  for cat in "${CATS[@]}"; do
+    local n=0 p=0
+    for entry in "${REG[@]}"; do
+      IFS='|' read -r name c2 <<< "$entry"
+      [ "$c2" = "$cat" ] || continue
+      n=$((n+1)); total=$((total+1))
+      if _installed "$name"; then p=$((p+1)); present=$((present+1)); fi
+    done
+    printf "    \e[1;36m%-22s\e[0m %s tools\n" "$(_catlabel "$cat")" "$n"
+  done
+  echo ""
+  printf "    %s tools total" "$(g "$total")"
+  [ "$present" -gt 0 ] && printf "  (%s installed on this system)" "$(g "$present")"
+  printf '\n\n'
+  dim "    darknode-tools list              every tool + description"; printf '\n'
+  dim "    darknode-tools <category>        filter by category"; printf '\n'
+  dim "    darknode-tools search <query>    find a tool"; printf '\n'
+  echo ""
+}
+
+_print_cat(){
+  local cat="$1" shown=0
+  printf "  %s\n" "$(c "=== $(_catlabel "$cat") ===")"
+  for entry in "${REG[@]}"; do
+    IFS='|' read -r name c2 <<< "$entry"
+    [ "$c2" = "$cat" ] || continue
+    local mark="  " ; _installed "$name" && mark="$(g '•')"
+    local d; d="$(_desc "$name")"; [ -n "$d" ] || d="$(dim '(no description)')"
+    printf "   %s %-24s %s\n" "$mark" "$name" "$d"
+    shown=$((shown+1))
+  done
+  [ "$shown" -gt 0 ] && echo ""
+}
+
+cmd_list(){
+  echo ""
+  for cat in "${CATS[@]}"; do _print_cat "$cat"; done
+  dim "   •  = installed on this system"; printf '\n\n'
+}
+
+cmd_cat(){
+  local cat; cat="$(_catnorm "$1")"
+  [ -n "$cat" ] || { r "  unknown category: $1"; printf '\n'; dim "  try: recon exploit post defense util"; printf '\n'; return 1; }
+  echo ""; _print_cat "$cat"
+}
+
+cmd_search(){
+  local q; q="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [ -n "$q" ] || { r "  usage: darknode-tools search <query>"; printf '\n'; return 1; }
+  echo ""; c "  Matches for '$q'"; printf '\n\n'
+  local found=0
+  for entry in "${REG[@]}"; do
+    IFS='|' read -r name cat <<< "$entry"
+    local d; d="$(_desc "$name")"
+    if echo "$name $cat $d" | tr '[:upper:]' '[:lower:]' | grep -q "$q"; then
+      local mark="  "; _installed "$name" && mark="$(g '•')"
+      printf "   %s %-24s %s\n" "$mark" "$name" "${d:-$(dim '(no description)')}"
+      found=$((found+1))
+    fi
+  done
+  [ "$found" -eq 0 ] && y "   no tools match '$q'"
+  echo ""
+}
+
+cmd_info(){
+  local name="${1:-}"
+  [ -n "$name" ] || { r "  usage: darknode-tools info <tool>"; printf '\n'; return 1; }
+  local cat=""
+  for entry in "${REG[@]}"; do IFS='|' read -r n c2 <<< "$entry"; [ "$n" = "$name" ] && cat="$c2" && break; done
+  [ -n "$cat" ] || { r "  unknown tool: $name"; printf '\n'; dim "  try: darknode-tools search $name"; printf '\n'; return 1; }
+  echo ""
+  printf "  %s\n" "$(c "$name")"
+  printf "    Category: %s\n" "$(_catlabel "$cat")"
+  printf "    About:    %s\n" "$(_desc "$name")"
+  if _installed "$name"; then printf "    Status:   %s (%s)\n" "$(g installed)" "$(command -v "$name")"
+  else printf "    Status:   %s\n" "$(y 'not installed on this system')"; fi
+  echo ""
+  dim "    Run it:   $name --help"; printf '\n\n'
+}
+
+cmd_run(){
+  local name="${1:-}"; shift 2>/dev/null || true
+  [ -n "$name" ] || { r "  usage: darknode-tools run <tool> [args…]"; printf '\n'; return 1; }
+  _installed "$name" || { r "  not installed: $name"; printf '\n'; return 1; }
+  exec "$name" "$@"
+}
+
+usage(){ cmd_overview; }
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  ""|help|-h|--help|overview) cmd_overview ;;
+  list|all|ls)                cmd_list ;;
+  search|find|-s)             cmd_search "${1:-}" ;;
+  info|show)                  cmd_info "${1:-}" ;;
+  run|exec)                   cmd_run "$@" ;;
+  recon|rec|exploit|exp|exploitation|post|post-exploit|postexploit|pe|defense|def|defence|blue|util|utility|ai|misc)
+                              cmd_cat "$cmd" ;;
+  *)                          r "  unknown command: $cmd"; printf '\n'; usage; exit 1 ;;
+esac

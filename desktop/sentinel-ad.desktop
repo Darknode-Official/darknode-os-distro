@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=AD Attack Planner
-Comment=Active Directory enumeration and attacks
-Exec=xfce4-terminal --title="AD Attacks" -e sentinel-ad
-Icon=user-group-new
-Terminal=false
-Type=Application
-Categories=System;Security;

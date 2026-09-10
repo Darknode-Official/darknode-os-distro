@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=Network Scanner
-Comment=Interactive nmap wrapper with scan presets
-Exec=xfce4-terminal --title="Network Scanner" -e sentinel-netscan
-Icon=network-workgroup
-Terminal=false
-Type=Application
-Categories=System;Security;

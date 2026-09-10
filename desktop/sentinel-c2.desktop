@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=C2 Launcher
-Comment=Launch and manage C2 frameworks
-Exec=xfce4-terminal --title="C2 Launcher" -e sentinel-c2
-Icon=network-server
-Terminal=false
-Type=Application
-Categories=System;Security;

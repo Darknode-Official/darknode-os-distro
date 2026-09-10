@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# darknode-incident — structured incident documentation and response tracking
+
+INC_DIR="$HOME/.darknode/incidents"
+CURRENT="$INC_DIR/.current"
+mkdir -p "$INC_DIR"
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+ts(){ date -u '+%Y-%m-%d %H:%M:%S UTC'; }
+
+_cur(){ [ -f "$CURRENT" ] && cat "$CURRENT" || echo ""; }
+_inc_dir(){ local id; id=$(_cur); [ -n "$id" ] && echo "$INC_DIR/$id" || { r "No active incident. Start with: darknode-incident new <title>"; return 1; }; }
+
+cmd_new(){
+  local title="${1:?usage: darknode-incident new <title>}"
+  local id; id="INC-$(date +%Y%m%d-%H%M%S)"
+  local dir="$INC_DIR/$id"
+  mkdir -p "$dir/evidence"
+  echo "$id" > "$CURRENT"
+
+  cat > "$dir/incident.json" << JSON
+{
+  "id": "$id",
+  "title": "$title",
+  "severity": "unknown",
+  "status": "open",
+  "created": "$(ts)",
+  "assignee": "",
+  "timeline": [],
+  "evidence": [],
+  "notes": ""
+}
+JSON
+
+  echo "[$(ts)] Incident created: $title" > "$dir/timeline.log"
+  g "Incident created: $id"
+  echo "  Title: $title"
+  echo "  Dir: $dir"
+  dim "  Next: darknode-incident log <what happened>"
+}
+
+cmd_log(){
+  local msg="${1:?usage: darknode-incident log <message>}"
+  local dir; dir=$(_inc_dir) || return 1
+  echo "[$(ts)] $msg" >> "$dir/timeline.log"
+  g "Logged: $msg"
+}
+
+cmd_evidence(){
+  local file="${1:?usage: darknode-incident evidence <file>}"
+  [ -f "$file" ] || { r "File not found: $file"; return 1; }
+  local dir; dir=$(_inc_dir) || return 1
+  local hash; hash=$(sha256sum "$file" | cut -d' ' -f1)
+  local name; name=$(basename "$file")
+  local stamp; stamp=$(date +%s)
+  cp "$file" "$dir/evidence/${stamp}_${name}"
+  echo "[$(ts)] Evidence added: $name (SHA256: $hash)" >> "$dir/timeline.log"
+  g "Evidence logged: $name"
+  echo "  SHA256: $hash"
+  echo "  Stored: $dir/evidence/${stamp}_${name}"
+}
+
+cmd_severity(){
+  local sev="${1:?usage: darknode-incident severity <critical|high|medium|low|info>}"
+  local dir; dir=$(_inc_dir) || return 1
+  case "$sev" in
+    critical|high|medium|low|info) : ;;
+    *) r "Invalid severity. Use: critical, high, medium, low, info"; return 1 ;;
+  esac
+  python3 -c "
+import json
+with open('$dir/incident.json') as f: d=json.load(f)
+d['severity']='$sev'
+with open('$dir/incident.json','w') as f: json.dump(d,f,indent=2)
+" 2>/dev/null
+  echo "[$(ts)] Severity set to: $sev" >> "$dir/timeline.log"
+  g "Severity: $sev"
+}
+
+cmd_assign(){
+  local who="${1:?usage: darknode-incident assign <name/email>}"
+  local dir; dir=$(_inc_dir) || return 1
+  python3 -c "
+import json
+with open('$dir/incident.json') as f: d=json.load(f)
+d['assignee']='$who'
+with open('$dir/incident.json','w') as f: json.dump(d,f,indent=2)
+" 2>/dev/null
+  echo "[$(ts)] Assigned to: $who" >> "$dir/timeline.log"
+  g "Assigned to: $who"
+}
+
+cmd_status(){
+  local dir; dir=$(_inc_dir) || return 1
+  local inc; inc=$(python3 -c "
+import json
+with open('$dir/incident.json') as f: d=json.load(f)
+print(f\"ID: {d['id']}\")
+print(f\"Title: {d['title']}\")
+print(f\"Severity: {d['severity']}\")
+print(f\"Status: {d['status']}\")
+print(f\"Created: {d['created']}\")
+print(f\"Assignee: {d.get('assignee','unassigned')}\")
+" 2>/dev/null)
+  c "Current Incident"
+  echo "$inc" | sed 's/^/  /'
+  echo ""
+  dim "Timeline:"
+  cat "$dir/timeline.log" 2>/dev/null | sed 's/^/  /'
+  echo ""
+  local ev_count; ev_count=$(ls "$dir/evidence" 2>/dev/null | wc -l)
+  dim "Evidence: $ev_count items"
+}
+
+cmd_close(){
+  local reason="${1:-Resolved}"
+  local dir; dir=$(_inc_dir) || return 1
+  python3 -c "
+import json
+with open('$dir/incident.json') as f: d=json.load(f)
+d['status']='closed'
+d['closed']='$(ts)'
+d['close_reason']='$reason'
+with open('$dir/incident.json','w') as f: json.dump(d,f,indent=2)
+" 2>/dev/null
+  echo "[$(ts)] Incident CLOSED: $reason" >> "$dir/timeline.log"
+  rm -f "$CURRENT"
+  g "Incident closed: $reason"
+}
+
+cmd_export(){
+  local dir; dir=$(_inc_dir) || { dim "No active incident. Listing all:"; ls "$INC_DIR" 2>/dev/null | grep INC | sed 's/^/  /'; return 0; }
+  local report="$dir/report.md"
+  c "Exporting incident report..."
+  {
+    echo "# Incident Report"
+    echo ""
+    python3 -c "
+import json
+with open('$dir/incident.json') as f: d=json.load(f)
+print(f\"**ID:** {d['id']}\")
+print(f\"**Title:** {d['title']}\")
+print(f\"**Severity:** {d['severity']}\")
+print(f\"**Status:** {d['status']}\")
+print(f\"**Created:** {d['created']}\")
+print(f\"**Assignee:** {d.get('assignee','unassigned')}\")
+" 2>/dev/null
+    echo ""
+    echo "## Timeline"
+    echo '```'
+    cat "$dir/timeline.log" 2>/dev/null
+    echo '```'
+    echo ""
+    echo "## Evidence"
+    ls "$dir/evidence" 2>/dev/null | while read -r f; do
+      echo "- $f (SHA256: $(sha256sum "$dir/evidence/$f" 2>/dev/null | cut -d' ' -f1))"
+    done
+  } > "$report"
+  g "Report exported: $report"
+}
+
+cmd_list(){
+  c "All Incidents"
+  echo ""
+  local active; active=$(_cur)
+  for d in "$INC_DIR"/INC-*; do
+    [ -d "$d" ] || continue
+    local id; id=$(basename "$d")
+    local status; status=$(python3 -c "import json;print(json.load(open('$d/incident.json')).get('status','?'))" 2>/dev/null || echo "?")
+    local title; title=$(python3 -c "import json;print(json.load(open('$d/incident.json')).get('title','?'))" 2>/dev/null || echo "?")
+    local marker=""; [ "$id" = "$active" ] && marker=" (ACTIVE)"
+    printf "  %-24s %-8s %s%s\n" "$id" "$status" "$title" "$marker"
+  done
+}
+
+usage(){ cat << 'U'
+
+  darknode-incident — structured incident documentation
+
+  Commands:
+    new <title>            Start a new incident
+    log <message>          Add timeline entry
+    evidence <file>        Add evidence (hashed + copied)
+    severity <level>       Set severity (critical/high/medium/low/info)
+    assign <name>          Assign a responder
+    status                 Show current incident details
+    close [reason]         Close the incident
+    export                 Export as markdown report
+    list                   List all incidents
+
+U
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  new) cmd_new "$@" ;; log) cmd_log "$@" ;; evidence) cmd_evidence "$@" ;;
+  severity) cmd_severity "$@" ;; assign) cmd_assign "$@" ;; status) cmd_status ;;
+  close) cmd_close "$@" ;; export) cmd_export ;; list) cmd_list ;;
+  help|--help|-h) usage ;; *) r "Unknown: $cmd"; usage; exit 1 ;;
+esac

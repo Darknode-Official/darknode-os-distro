@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# darknode-tripwire — custom tripwire system for intrusion detection
+# Deploy file integrity monitors with SHA256 baselines. Detects modifications,
+# new files, deletions, and permission changes. Original implementation.
+
+DIR="$HOME/.darknode/tripwire"; mkdir -p "$DIR"
+BASELINE_DIR="$DIR/baselines"
+ALERTS_DIR="$DIR/alerts"; mkdir -p "$BASELINE_DIR" "$ALERTS_DIR"
+
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+bold(){ printf '\e[1m%s\e[0m\n' "$*"; }
+
+_slug(){ echo "$1" | tr '/' '_' | tr -cd 'a-zA-Z0-9_-'; }
+
+_hash_path(){
+  local path="$1"
+  if [ -f "$path" ]; then
+    local hash=$(sha256sum "$path" 2>/dev/null | awk '{print $1}')
+    local perms=$(stat -c '%a %U:%G %s' "$path" 2>/dev/null)
+    echo "$hash $perms $path"
+  elif [ -d "$path" ]; then
+    find "$path" -type f 2>/dev/null | sort | while read -r f; do
+      local hash=$(sha256sum "$f" 2>/dev/null | awk '{print $1}')
+      local perms=$(stat -c '%a %U:%G %s' "$f" 2>/dev/null)
+      echo "$hash $perms $f"
+    done
+  fi
+}
+
+cmd_deploy(){
+  local path=""
+  local mode="dir"
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file) mode="file"; shift ;;
+      *) path="$1"; shift ;;
+    esac
+  done
+
+  [ -z "$path" ] && { r "usage: darknode-tripwire deploy [--file] <path>"; return 1; }
+  [ -e "$path" ] || { r "Path not found: $path"; return 1; }
+
+  local abs_path=$(realpath "$path")
+  local slug=$(_slug "$abs_path")
+  local baseline="$BASELINE_DIR/${slug}.baseline"
+
+  c "Deploying tripwire on: $abs_path"
+
+  _hash_path "$abs_path" > "$baseline"
+  local count=$(wc -l < "$baseline")
+
+  # Save config
+  echo "$abs_path" >> "$DIR/watched.list"
+  sort -u "$DIR/watched.list" -o "$DIR/watched.list"
+
+  g "Tripwire deployed: $count files baselined"
+  echo "  Baseline: $baseline"
+  dim "Check: darknode-tripwire check"
+}
+
+cmd_check(){
+  c "Tripwire Check"
+  echo ""
+
+  [ -f "$DIR/watched.list" ] || { dim "No tripwires deployed. Use: darknode-tripwire deploy <path>"; return 0; }
+
+  local total_alerts=0
+  local stamp=$(date +%Y%m%d-%H%M%S)
+  local alert_file="$ALERTS_DIR/check-${stamp}.log"
+
+  while IFS= read -r watched_path; do
+    [ -z "$watched_path" ] && continue
+    [ -e "$watched_path" ] || { r "  MISSING: $watched_path (entire path deleted!)"; echo "DELETED_PATH $watched_path" >> "$alert_file"; total_alerts=$((total_alerts+1)); continue; }
+
+    local slug=$(_slug "$watched_path")
+    local baseline="$BASELINE_DIR/${slug}.baseline"
+    [ -f "$baseline" ] || { y "  No baseline for: $watched_path (run deploy first)"; continue; }
+
+    bold "  Checking: $watched_path"
+
+    # Generate current state
+    local current=$(mktemp)
+    _hash_path "$watched_path" > "$current"
+
+    # Compare: modified files (hash changed)
+    while IFS=' ' read -r old_hash old_perms old_owner old_size old_file; do
+      local new_line=$(grep " ${old_file}$" "$current" 2>/dev/null)
+      if [ -z "$new_line" ]; then
+        r "    DELETED: $old_file"
+        echo "DELETED $old_file" >> "$alert_file"
+        total_alerts=$((total_alerts+1))
+      else
+        local new_hash=$(echo "$new_line" | awk '{print $1}')
+        local new_perms=$(echo "$new_line" | awk '{print $2}')
+        if [ "$old_hash" != "$new_hash" ]; then
+          r "    MODIFIED: $old_file (hash changed)"
+          echo "MODIFIED $old_file old=$old_hash new=$new_hash" >> "$alert_file"
+          total_alerts=$((total_alerts+1))
+        fi
+        if [ "$old_perms" != "$new_perms" ]; then
+          y "    PERMS CHANGED: $old_file ($old_perms -> $new_perms)"
+          echo "PERMS $old_file old=$old_perms new=$new_perms" >> "$alert_file"
+          total_alerts=$((total_alerts+1))
+        fi
+      fi
+    done < "$baseline"
+
+    # Check for new files
+    while IFS=' ' read -r new_hash new_perms new_owner new_size new_file; do
+      if ! grep -q " ${new_file}$" "$baseline" 2>/dev/null; then
+        y "    NEW FILE: $new_file ($new_perms, ${new_size}B)"
+        echo "NEW $new_file perms=$new_perms size=$new_size" >> "$alert_file"
+        total_alerts=$((total_alerts+1))
+      fi
+    done < "$current"
+
+    rm -f "$current"
+  done < "$DIR/watched.list"
+
+  echo ""
+  if [ $total_alerts -eq 0 ]; then
+    g "  All clear: no changes detected"
+  else
+    r "  ALERTS: $total_alerts change(s) detected!"
+    echo "  Details: $alert_file"
+  fi
+}
+
+cmd_alert(){
+  c "Tripwire Alerts"
+  echo ""
+
+  local alerts=$(ls -t "$ALERTS_DIR"/*.log 2>/dev/null)
+  if [ -z "$alerts" ]; then
+    dim "  No alerts recorded."
+    return
+  fi
+
+  local latest=$(echo "$alerts" | head -1)
+  bold "Latest check: $(basename "$latest")"
+  echo ""
+  while IFS= read -r line; do
+    local type=$(echo "$line" | awk '{print $1}')
+    case "$type" in
+      DELETED*) r "  $line" ;;
+      MODIFIED*) r "  $line" ;;
+      PERMS*) y "  $line" ;;
+      NEW*) y "  $line" ;;
+      *) echo "  $line" ;;
+    esac
+  done < "$latest"
+
+  echo ""
+  dim "All alerts: ls $ALERTS_DIR/"
+}
+
+cmd_baseline(){
+  c "Resetting all baselines"
+  echo ""
+
+  [ -f "$DIR/watched.list" ] || { dim "No tripwires deployed."; return 0; }
+
+  while IFS= read -r watched_path; do
+    [ -z "$watched_path" ] && continue
+    [ -e "$watched_path" ] || continue
+
+    local slug=$(_slug "$watched_path")
+    local baseline="$BASELINE_DIR/${slug}.baseline"
+    _hash_path "$watched_path" > "$baseline"
+    local count=$(wc -l < "$baseline")
+    echo "  Reset: $watched_path ($count files)"
+  done < "$DIR/watched.list"
+
+  g "All baselines reset."
+}
+
+cmd_list(){
+  c "Deployed Tripwires"
+  echo ""
+
+  [ -f "$DIR/watched.list" ] || { dim "  No tripwires. Deploy: darknode-tripwire deploy <path>"; return 0; }
+
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    local slug=$(_slug "$path")
+    local baseline="$BASELINE_DIR/${slug}.baseline"
+    local files=0
+    [ -f "$baseline" ] && files=$(wc -l < "$baseline")
+    local exists="YES"
+    [ -e "$path" ] || exists="MISSING"
+    printf "  %-40s %5d files  %s\n" "$path" "$files" "$exists"
+  done < "$DIR/watched.list"
+}
+
+cmd_remove(){
+  local path="${1:?usage: darknode-tripwire remove <path>}"
+  local abs_path=$(realpath "$path" 2>/dev/null || echo "$path")
+  local slug=$(_slug "$abs_path")
+
+  rm -f "$BASELINE_DIR/${slug}.baseline"
+  grep -v "^${abs_path}$" "$DIR/watched.list" > "$DIR/watched.list.tmp" 2>/dev/null
+  mv "$DIR/watched.list.tmp" "$DIR/watched.list"
+
+  g "Removed tripwire: $abs_path"
+}
+
+usage(){
+  cat << 'USAGE'
+
+  darknode-tripwire — Custom File Integrity Monitor
+
+  Commands:
+    deploy <path>        Monitor a directory for changes
+    deploy --file <path> Monitor a specific file
+    check                Check all tripwires for changes
+    alert                Show triggered alerts
+    baseline             Reset all baselines to current state
+    list                 List all deployed tripwires
+    remove <path>        Remove a tripwire
+
+USAGE
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  deploy)   cmd_deploy "$@" ;;
+  check)    cmd_check ;;
+  alert)    cmd_alert ;;
+  baseline) cmd_baseline ;;
+  list)     cmd_list ;;
+  remove)   cmd_remove "$@" ;;
+  help|--help|-h) usage ;;
+  *)        r "Unknown: $cmd"; usage; exit 1 ;;
+esac

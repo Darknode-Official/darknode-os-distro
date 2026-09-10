@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# darknode-report — professional penetration-test report generator
+#   darknode-report init <project>             — start a new engagement
+#   darknode-report finding <critical|high|medium|low|info> — add a finding
+#   darknode-report screenshot <file> [desc]   — attach a screenshot
+#   darknode-report note <text>                — add a note
+#   darknode-report generate                   — build the final report
+#   darknode-report list                       — list findings
+#   darknode-report status                     — show engagement status
+set -uo pipefail
+
+REPORTS_DIR="$HOME/.darknode/reports"
+ACTIVE_FILE="$REPORTS_DIR/.active"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+
+_active(){ [ -f "$ACTIVE_FILE" ] && cat "$ACTIVE_FILE" || { r "No active engagement. Run: darknode-report init <name>"; return 1; }; }
+_projdir(){ local p; p=$(_active) || return 1; echo "$REPORTS_DIR/$p"; }
+
+cmd_init(){
+  local name="${1:?usage: darknode-report init <project-name>}"
+  name=$(echo "$name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+  local dir="$REPORTS_DIR/$name"
+  mkdir -p "$dir/screenshots" "$dir/findings"
+  echo "$name" > "$ACTIVE_FILE"
+
+  cat > "$dir/meta.json" << METAEOF
+{
+  "project": "$name",
+  "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "tester": "$(whoami)",
+  "status": "in-progress",
+  "scope": "",
+  "client": "",
+  "findings": 0
+}
+METAEOF
+
+  g "Engagement '$name' created."
+  echo "  Dir: $dir"
+  echo ""
+  echo "  Next steps:"
+  echo "    darknode-report finding critical    Add a finding"
+  echo "    darknode-report screenshot img.png  Attach evidence"
+  echo "    darknode-report generate            Build the report"
+}
+
+cmd_finding(){
+  local dir; dir=$(_projdir) || return 1
+  local sev="${1:-medium}"
+  case "$sev" in critical|high|medium|low|info) : ;; *) r "Severity must be: critical|high|medium|low|info"; return 1 ;; esac
+
+  local count=$(ls "$dir/findings/" 2>/dev/null | wc -l)
+  local fid=$((count + 1))
+  local ffile="$dir/findings/$(printf '%03d' "$fid")-${sev}.md"
+
+  echo ""
+  c "New Finding #$fid ($sev)"
+  echo ""
+  read -rp "  Title: " title
+  read -rp "  Affected asset (URL/IP/host): " asset
+  echo "  Description (end with empty line):"
+  desc=""
+  while IFS= read -r line; do
+    [ -z "$line" ] && break
+    desc="$desc$line\n"
+  done
+  read -rp "  Impact: " impact
+  read -rp "  Remediation: " fix
+  read -rp "  CVSS score (0-10, or skip): " cvss
+  read -rp "  CVE (if known, or skip): " cve
+
+  cat > "$ffile" << FINDEOF
+# Finding #$fid: $title
+
+| Field | Value |
+|-------|-------|
+| Severity | **${sev^^}** |
+| CVSS | ${cvss:-N/A} |
+| CVE | ${cve:-N/A} |
+| Asset | $asset |
+
+## Description
+$(echo -e "$desc")
+
+## Impact
+$impact
+
+## Remediation
+$fix
+
+## Evidence
+<!-- Add screenshots: darknode-report screenshot <file> -->
+
+---
+_Found: $(date -u +%Y-%m-%d)_
+FINDEOF
+
+  g "Finding #$fid saved: $ffile"
+  echo "  Add evidence: darknode-report screenshot <file> \"$title\""
+}
+
+cmd_screenshot(){
+  local dir; dir=$(_projdir) || return 1
+  local file="${1:?usage: darknode-report screenshot <file> [description]}"
+  shift
+  local desc="${*:-screenshot}"
+  [ -f "$file" ] || { r "File not found: $file"; return 1; }
+  local name=$(basename "$file")
+  cp "$file" "$dir/screenshots/$name"
+  g "Screenshot attached: $name"
+  echo "  Description: $desc"
+}
+
+cmd_note(){
+  local dir; dir=$(_projdir) || return 1
+  local text="${*:?usage: darknode-report note <text>}"
+  echo "[$(date -u +%Y-%m-%d\ %H:%M)] $text" >> "$dir/notes.txt"
+  g "Note added."
+}
+
+cmd_list(){
+  local dir; dir=$(_projdir) || return 1
+  echo ""
+  c "Findings for: $(_active)"
+  echo ""
+  local crit=0 high=0 med=0 low=0 inf=0
+  for f in "$dir/findings/"*.md; do
+    [ -f "$f" ] || continue
+    local fname=$(basename "$f")
+    local sev=$(echo "$fname" | grep -oP '(critical|high|medium|low|info)')
+    local title=$(head -1 "$f" | sed 's/^# //')
+    case "$sev" in critical) crit=$((crit+1));; high) high=$((high+1));; medium) med=$((med+1));; low) low=$((low+1));; info) inf=$((inf+1));; esac
+    local color="\e[0m"
+    case "$sev" in critical) color="\e[1;31m";; high) color="\e[31m";; medium) color="\e[33m";; low) color="\e[32m";; info) color="\e[36m";; esac
+    printf "  ${color}[%-8s]\e[0m %s\n" "${sev^^}" "$title"
+  done
+  echo ""
+  echo "  Summary: $(r "$crit critical") $(y "$high high") $(y "$med medium") $(g "$low low") $(c "$inf info")"
+}
+
+cmd_generate(){
+  local dir; dir=$(_projdir) || return 1
+  local proj; proj=$(_active)
+  local report="$dir/report-$(date +%Y%m%d).md"
+  local findings=("$dir/findings/"*.md)
+
+  c "Generating report for: $proj"
+  {
+    echo "# Penetration Test Report: $proj"
+    echo ""
+    echo "**Date:** $(date -u +%Y-%m-%d)"
+    echo "**Tester:** $(whoami)@$(hostname)"
+    echo "**Status:** Complete"
+    echo ""
+    echo "---"
+    echo ""
+    echo "## Executive Summary"
+    echo ""
+    local crit=0 high=0 med=0 low=0 inf=0 total=0
+    for f in "${findings[@]}"; do
+      [ -f "$f" ] || continue
+      total=$((total+1))
+      local sev=$(basename "$f" | grep -oP '(critical|high|medium|low|info)')
+      case "$sev" in critical) crit=$((crit+1));; high) high=$((high+1));; medium) med=$((med+1));; low) low=$((low+1));; info) inf=$((inf+1));; esac
+    done
+    echo "This assessment identified **$total findings**:"
+    echo ""
+    echo "| Severity | Count |"
+    echo "|----------|-------|"
+    echo "| Critical | $crit |"
+    echo "| High     | $high |"
+    echo "| Medium   | $med |"
+    echo "| Low      | $low |"
+    echo "| Info     | $inf |"
+    echo ""
+    if [ "$crit" -gt 0 ]; then
+      echo "**Immediate action required.** Critical vulnerabilities were identified that could lead to full system compromise."
+    elif [ "$high" -gt 0 ]; then
+      echo "High-severity findings require prompt remediation to reduce organizational risk."
+    else
+      echo "No critical or high-severity findings. The security posture is reasonable with room for improvement."
+    fi
+    echo ""
+    echo "---"
+    echo ""
+    echo "## Findings"
+    echo ""
+    for f in "${findings[@]}"; do
+      [ -f "$f" ] || continue
+      cat "$f"
+      echo ""
+    done
+    echo "---"
+    echo ""
+    echo "## Methodology"
+    echo ""
+    echo "Testing was conducted using the Darknode OS security workstation with the following approach:"
+    echo ""
+    echo "1. **Reconnaissance** — passive and active enumeration of the target scope"
+    echo "2. **Vulnerability Assessment** — automated scanning and manual testing"
+    echo "3. **Exploitation** — validation of identified vulnerabilities"
+    echo "4. **Post-Exploitation** — assessment of lateral movement and data access"
+    echo "5. **Reporting** — documentation of findings with evidence and remediation"
+    echo ""
+    echo "---"
+    echo ""
+    echo "_Generated by Darknode OS report generator on $(date -u)_"
+  } > "$report"
+
+  g "Report generated: $report"
+  echo "  Findings: $total ($crit critical, $high high, $med medium, $low low, $inf info)"
+  echo "  View: cat $report"
+  echo "  Convert to PDF: pandoc $report -o ${report%.md}.pdf (if pandoc installed)"
+}
+
+cmd_status(){
+  local dir; dir=$(_projdir) || return 1
+  local proj; proj=$(_active)
+  echo ""
+  c "Engagement: $proj"
+  echo "  Dir: $dir"
+  echo "  Findings: $(ls "$dir/findings/"*.md 2>/dev/null | wc -l)"
+  echo "  Screenshots: $(ls "$dir/screenshots/" 2>/dev/null | wc -l)"
+  echo "  Notes: $(wc -l < "$dir/notes.txt" 2>/dev/null || echo 0)"
+  echo "  Created: $(python3 -c "import json;print(json.load(open('$dir/meta.json')).get('created','?'))" 2>/dev/null || echo '?')"
+  echo ""
+}
+
+case "${1:-help}" in
+  init)       shift; cmd_init "$@" ;;
+  finding)    shift; cmd_finding "$@" ;;
+  screenshot) shift; cmd_screenshot "$@" ;;
+  note)       shift; cmd_note "$@" ;;
+  list)       cmd_list ;;
+  generate)   cmd_generate ;;
+  status)     cmd_status ;;
+  *)
+    echo ""
+    echo "  darknode-report — pentest report generator"
+    echo ""
+    echo "    init <project>           Start an engagement"
+    echo "    finding <severity>       Add a finding (critical|high|medium|low|info)"
+    echo "    screenshot <file> [desc] Attach evidence"
+    echo "    note <text>              Add a note"
+    echo "    list                     List all findings"
+    echo "    generate                 Build the final markdown report"
+    echo "    status                   Show engagement status"
+    echo ""
+    ;;
+esac

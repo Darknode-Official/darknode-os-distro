@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# darknode-dossier — build an intelligence dossier on a target
+# Builds a complete intelligence package from multiple OSINT sources into
+# a single structured markdown report. Original tool.
+#
+#   darknode-dossier target example.com    full dossier
+#   darknode-dossier person "John Doe"     person profile
+#   darknode-dossier org "ACME Corp"       organization profile
+#   darknode-dossier quick example.com     fast summary
+
+DIR="$HOME/.darknode/dossiers"; mkdir -p "$DIR"
+c(){ printf '\e[1;36m%s\e[0m\n' "$*"; }
+g(){ printf '\e[32m%s\e[0m\n' "$*"; }
+y(){ printf '\e[33m%s\e[0m\n' "$*"; }
+r(){ printf '\e[31m%s\e[0m\n' "$*"; }
+dim(){ printf '\e[2m%s\e[0m\n' "$*"; }
+bold(){ printf '\e[1m%s\e[0m\n' "$*"; }
+ts(){ date -u +%Y%m%d-%H%M%S; }
+
+_section(){ printf '\n## %s\n\n' "$1"; }
+
+cmd_target(){
+  local target="${1:?usage: darknode-dossier target <domain>}"
+  local stamp=$(ts)
+  local report="$DIR/dossier-${target}-${stamp}.md"
+  local tmpdir=$(mktemp -d)
+
+  c "Building dossier for: $target"
+  dim "This may take 1-3 minutes..."
+  echo ""
+
+  {
+    echo "# Target Dossier: $target"
+    echo "_Generated $(date -u) by Darknode OS_"
+    echo ""
+    echo "---"
+
+    # 1. WHOIS
+    _section "1. Domain Registration (WHOIS)"
+    echo '```'
+    timeout 15 whois "$target" 2>/dev/null | grep -iE 'registrar|creation|expir|name server|registrant|admin|org|country|state|city|email|phone|dnssec' | head -20 || echo "(WHOIS lookup failed)"
+    echo '```'
+
+    # 2. DNS Records
+    _section "2. DNS Infrastructure"
+    echo "### A Records"
+    echo '```'
+    dig +short "$target" A 2>/dev/null || echo "(no A records)"
+    echo '```'
+    echo "### MX Records"
+    echo '```'
+    dig +short "$target" MX 2>/dev/null || echo "(no MX records)"
+    echo '```'
+    echo "### NS Records"
+    echo '```'
+    dig +short "$target" NS 2>/dev/null || echo "(no NS records)"
+    echo '```'
+    echo "### TXT Records (SPF/DKIM/verification)"
+    echo '```'
+    dig +short "$target" TXT 2>/dev/null | head -10 || echo "(no TXT records)"
+    echo '```'
+
+    # 3. Subdomains (crt.sh)
+    _section "3. Subdomains (Certificate Transparency)"
+    echo '```'
+    local subs=$(timeout 20 curl -s "https://crt.sh/?q=%25.$target&output=json" 2>/dev/null | python3 -c "
+import sys,json
+try:
+    data=json.load(sys.stdin)
+    seen=set()
+    for e in data:
+        for name in e.get('name_value','').split('\n'):
+            name=name.strip().lower()
+            if name and name not in seen:
+                seen.add(name)
+                print(name)
+except: pass
+" 2>/dev/null | sort -u | head -50)
+    if [ -n "$subs" ]; then
+      echo "$subs"
+      echo ""
+      echo "Total: $(echo "$subs" | wc -l) unique subdomains"
+    else
+      echo "(no results from crt.sh)"
+    fi
+    echo '```'
+
+    # 4. HTTP Headers & Technology
+    _section "4. Technology Stack"
+    echo '```'
+    timeout 10 curl -sI "https://$target" 2>/dev/null | grep -iE '^server:|^x-powered|^x-aspnet|^x-generator|^x-drupal|^set-cookie|^strict-transport|^content-security|^x-frame' | head -15 || echo "(could not reach target)"
+    echo '```'
+    if command -v whatweb >/dev/null 2>&1; then
+      echo ""
+      echo "### WhatWeb fingerprint"
+      echo '```'
+      timeout 15 whatweb -q "$target" 2>/dev/null | head -5 || echo "(whatweb not available)"
+      echo '```'
+    fi
+
+    # 5. Wayback Machine
+    _section "5. Historical Data (Wayback Machine)"
+    echo '```'
+    timeout 15 curl -s "http://web.archive.org/cdx/search/cdx?url=$target/*&output=text&fl=original&collapse=urlkey&limit=20" 2>/dev/null | head -20 || echo "(wayback lookup failed)"
+    echo '```'
+
+    # 6. Email harvesting
+    _section "6. Email Addresses"
+    if command -v theHarvester >/dev/null 2>&1; then
+      echo '```'
+      timeout 30 theHarvester -d "$target" -b google,bing -l 50 2>/dev/null | grep '@' | sort -u | head -20 || echo "(no emails found)"
+      echo '```'
+    else
+      echo "_theHarvester not installed. Try: apt install theharvester_"
+    fi
+
+    # 7. Open ports (quick scan)
+    _section "7. Network Exposure"
+    if command -v nmap >/dev/null 2>&1; then
+      echo '```'
+      timeout 30 nmap -sS -T4 --top-ports 20 "$target" 2>/dev/null | grep -E 'open|filtered' | head -20 || echo "(scan failed or no open ports)"
+      echo '```'
+    else
+      echo "_nmap not installed_"
+    fi
+
+    # 8. SSL/TLS Certificate
+    _section "8. SSL/TLS Certificate"
+    echo '```'
+    timeout 10 bash -c "echo | openssl s_client -connect $target:443 2>/dev/null | openssl x509 -noout -subject -issuer -dates -ext subjectAltName 2>/dev/null" | head -20 || echo "(no SSL cert)"
+    echo '```'
+
+    # 9. Attack Surface Summary
+    _section "9. Attack Surface Summary"
+    local ip_count=$(dig +short "$target" A 2>/dev/null | wc -l)
+    local sub_count=$(echo "$subs" | wc -l)
+    echo "| Asset | Count |"
+    echo "|-------|-------|"
+    echo "| IP addresses | $ip_count |"
+    echo "| Subdomains | $sub_count |"
+    echo "| MX servers | $(dig +short "$target" MX 2>/dev/null | wc -l) |"
+    echo "| NS servers | $(dig +short "$target" NS 2>/dev/null | wc -l) |"
+
+    # 10. Recommendations
+    _section "10. Recommendations"
+    echo "1. Enumerate all $sub_count subdomains for web applications"
+    echo "2. Check each subdomain for default credentials and known CVEs"
+    echo "3. Test email security (SPF, DKIM, DMARC)"
+    echo "4. Scan discovered IPs for services and vulnerabilities"
+    echo "5. Search for leaked credentials in breach databases"
+    echo ""
+    echo "---"
+    echo "_Dossier generated by Darknode OS_"
+
+  } > "$report" 2>/dev/null
+
+  rm -rf "$tmpdir"
+  g "Dossier saved: $report"
+  echo "  $(wc -l < "$report") lines"
+  dim "View: cat $report"
+  dim "Or:   less $report"
+}
+
+cmd_quick(){
+  local target="${1:?usage: darknode-dossier quick <domain>}"
+  c "Quick recon: $target"
+  echo ""
+
+  bold "IP:"
+  dig +short "$target" A 2>/dev/null | head -3 || echo "  (failed)"
+  echo ""
+
+  bold "MX:"
+  dig +short "$target" MX 2>/dev/null | head -3 || echo "  (none)"
+  echo ""
+
+  bold "Nameservers:"
+  dig +short "$target" NS 2>/dev/null | head -3 || echo "  (none)"
+  echo ""
+
+  bold "Server:"
+  timeout 5 curl -sI "https://$target" 2>/dev/null | grep -i "^server:" | head -1 || echo "  (unreachable)"
+  echo ""
+
+  bold "Subdomains (top 10):"
+  timeout 10 curl -s "https://crt.sh/?q=%25.$target&output=json" 2>/dev/null | python3 -c "
+import sys,json
+try:
+    seen=set()
+    for e in json.load(sys.stdin):
+        for n in e.get('name_value','').split('\n'):
+            n=n.strip().lower()
+            if n and n not in seen: seen.add(n); print('  '+n)
+            if len(seen)>=10: break
+        if len(seen)>=10: break
+except: pass
+" 2>/dev/null || echo "  (crt.sh failed)"
+
+  echo ""
+  dim "Full dossier: darknode-dossier target $target"
+}
+
+cmd_person(){
+  local name="${1:?usage: darknode-dossier person \"Full Name\"}"
+  local stamp=$(ts)
+  local slug=$(echo "$name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+  local report="$DIR/person-${slug}-${stamp}.md"
+
+  c "Building person profile: $name"
+  {
+    echo "# Person Profile: $name"
+    echo "_Generated $(date -u)_"
+    echo ""
+
+    _section "Username Search"
+    if command -v sherlock >/dev/null 2>&1; then
+      local username=$(echo "$name" | tr ' ' '' | tr '[:upper:]' '[:lower:]')
+      echo "Checking username: $username"
+      echo '```'
+      timeout 30 sherlock "$username" --print-found 2>/dev/null | head -20 || echo "(sherlock failed)"
+      echo '```'
+    else
+      echo "_sherlock not installed_"
+    fi
+
+    _section "Search Engine Results"
+    echo "Manual searches to perform:"
+    echo "- Google: \"$name\" site:linkedin.com"
+    echo "- Google: \"$name\" site:github.com"
+    echo "- Google: \"$name\" resume OR CV filetype:pdf"
+    echo "- Google: \"$name\" email OR contact"
+
+  } > "$report" 2>/dev/null
+
+  g "Person profile saved: $report"
+}
+
+cmd_org(){
+  local org="${1:?usage: darknode-dossier org \"Company Name\"}"
+  local stamp=$(ts)
+  local slug=$(echo "$org" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+  local report="$DIR/org-${slug}-${stamp}.md"
+
+  c "Building org profile: $org"
+  {
+    echo "# Organization Profile: $org"
+    echo "_Generated $(date -u)_"
+    echo ""
+
+    _section "Domain Discovery"
+    echo "Search for domains associated with '$org':"
+    echo "- Google: \"$org\" site:linkedin.com"
+    echo "- ARIN/RIPE: whois -h whois.arin.net 'o $org'"
+    echo ""
+    echo '```'
+    timeout 15 whois -h whois.arin.net "o $org" 2>/dev/null | head -20 || echo "(ARIN lookup failed)"
+    echo '```'
+
+    _section "Employee Enumeration"
+    echo "- LinkedIn: search company page for employees"
+    echo "- GitHub: search organization repos"
+    echo "- Job postings: reveal tech stack and team structure"
+
+    _section "Technology Indicators"
+    echo "- Check job postings for tech stack mentions"
+    echo "- Scan public repos for dependencies"
+    echo "- Check DNS for cloud providers (AWS, Azure, GCP)"
+
+  } > "$report" 2>/dev/null
+
+  g "Org profile saved: $report"
+}
+
+usage(){
+  cat << 'USAGE'
+
+  darknode-dossier — Target Dossier Generator
+
+  Commands:
+    target <domain>     Full intelligence dossier (WHOIS, DNS, subs, tech, certs)
+    quick <domain>      Fast 30-second summary
+    person "Full Name"  Person OSINT profile
+    org "Company Name"  Organization profile
+
+  Dossiers saved to: ~/.darknode/dossiers/
+
+USAGE
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+case "$cmd" in
+  target)  cmd_target "$@" ;;
+  quick)   cmd_quick "$@" ;;
+  person)  cmd_person "$@" ;;
+  org)     cmd_org "$@" ;;
+  help|--help|-h) usage ;;
+  *)       r "Unknown: $cmd"; usage; exit 1 ;;
+esac
