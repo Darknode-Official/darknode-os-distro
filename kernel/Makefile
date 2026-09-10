@@ -4,7 +4,7 @@
 CC      = i686-elf-gcc
 AS      = nasm
 LD      = i686-elf-ld
-CFLAGS  = -m32 -std=gnu99 -ffreestanding -O2 -Wall -Wextra -Iinclude -Ikernel -Idrivers
+CFLAGS  = -m32 -std=gnu99 -ffreestanding -O2 -Wall -Wextra -Iinclude -Ikernel -Idrivers -Ifs -Inet
 ASFLAGS = -f elf32
 LDFLAGS = -T linker.ld -nostdlib
 
@@ -21,7 +21,11 @@ ASM_SRCS = boot/multiboot.asm boot/boot.asm boot/gdt.asm boot/idt.asm
 C_SRCS   = kernel/kernel.c kernel/console.c kernel/string.c kernel/gdt.c \
            kernel/idt.c kernel/timer.c kernel/keyboard.c kernel/pmm.c \
            kernel/heap.c kernel/serial.c kernel/shell.c \
-           drivers/rtc.c drivers/pci.c
+           kernel/process.c kernel/syscall.c \
+           drivers/rtc.c drivers/pci.c drivers/ata.c drivers/ne2000.c \
+           fs/vfs.c fs/ramfs.c fs/devfs.c \
+           net/ethernet.c net/arp.c net/ipv4.c net/icmp.c \
+           net/udp.c net/dhcp.c net/dns.c
 
 ASM_OBJS = $(ASM_SRCS:.asm=.o)
 C_OBJS   = $(C_SRCS:.c=.o)
@@ -53,11 +57,17 @@ iso: $(KERNEL)
 	@echo "\n  $(ISO) ready — boot with: qemu-system-i386 -cdrom $(ISO)\n"
 
 run: iso
-	qemu-system-i386 -cdrom $(ISO) -serial stdio -m 128M
+	qemu-system-i386 -cdrom $(ISO) -serial stdio -m 128M \
+		-netdev user,id=net0 -device ne2k_pci,netdev=net0
 
 debug: iso
-	qemu-system-i386 -cdrom $(ISO) -serial stdio -m 128M -s -S
+	qemu-system-i386 -cdrom $(ISO) -serial stdio -m 128M -s -S \
+		-netdev user,id=net0 -device ne2k_pci,netdev=net0
 
 clean:
 	rm -f $(OBJS) $(KERNEL) $(ISO)
 	rm -rf isodir
+
+loc:
+	@echo "Lines of code:"
+	@find . -name '*.c' -o -name '*.h' -o -name '*.asm' | xargs wc -l | tail -1
